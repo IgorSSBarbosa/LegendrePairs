@@ -110,9 +110,11 @@ $$E(A,B) = \sum_{s=1}^{(\ell-1)/2}\big(\mathrm{PAF}_A(s)+\mathrm{PAF}_B(s)+2\big
 ### `parallel_search.py` — the restarts, across CPU cores
 The restarts of `local_search.search` are independent random walks that all stop
 the instant one hits $E=0$, so they are **embarrassingly parallel**. This module
-splits the `restarts` budget into chunks, farms them to a `ProcessPoolExecutor`
+splits the `restarts` budget into chunks, farms them to a `multiprocessing.Pool`
 (one interpreter per core, bypassing the GIL), and returns the first solution —
-cancelling the rest. Task $i$ is seeded `seed + 7919*i` for reproducibility. This
+`terminate()`-ing the still-running workers so the process exits immediately
+instead of blocking on a straggler chunk. Task $i$ is seeded `seed + 7919*i`
+for reproducibility. This
 is a **constant-factor** win (≈ number of physical cores); it does not touch the
 exponential scaling.
 

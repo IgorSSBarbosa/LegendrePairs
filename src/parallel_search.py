@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import argparse
 import math
+import multiprocessing as mp
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from legendre import is_legendre_pair
 from local_search import search, _fmt
@@ -91,18 +91,23 @@ def search_parallel(
     restarts_done = 0
     solution = None
 
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_task, c): c for c in chunks}
-        for fut in as_completed(futures):
-            res = fut.result()
+    # A multiprocessing.Pool (not ProcessPoolExecutor) because we need to abandon
+    # in-flight work the instant we find a solution. ``pool.terminate()`` SIGTERMs
+    # the running workers immediately; the executor's cancel_futures only drops
+    # *pending* tasks and then blocks on the running ones, so the process would
+    # hang until a straggler chunk finished.
+    pool = mp.Pool(processes=workers)
+    try:
+        for res in pool.imap_unordered(_task, chunks):
             restarts_done += res["restarts_given"]
             if res["best_E"] is not None:
                 best_E = res["best_E"] if best_E is None else min(best_E, res["best_E"])
             if res["solved"]:
                 solution = res
-                # Drop the rest; don't wait for the stragglers.
-                ex.shutdown(wait=False, cancel_futures=True)
                 break
+    finally:
+        pool.terminate()   # kill any still-running restarts, don't wait them out
+        pool.join()
 
     seconds = time.perf_counter() - t_start
     if solution is not None:
