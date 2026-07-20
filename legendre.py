@@ -1,0 +1,449 @@
+"""Check whether a proposed pair of sequences is a Legendre pair.
+
+Reference
+---------
+S.M. Perera, I.S. Kotsireas, "A low-complexity algorithm to search for
+Legendre pairs", Linear Algebra and its Applications 721 (2025) 149-171.
+
+Definitions (Def. 2.1, 2.2)
+---------------------------
+Periodic autocorrelation function (PAF) of L = [a_1, ..., a_ell]:
+
+    PAF_L(s) = sum_{k=1}^{ell} a_k * a_{k+s},   indices taken mod ell.
+
+Two sequences L_A, L_B of the same odd length ell over {-1, +1} form a
+Legendre pair iff
+
+    PAF_A(s) + PAF_B(s) = -2   for all s = 1, ..., (ell-1)/2.
+
+By symmetry PAF(s) = PAF(ell - s), so checking s up to (ell-1)/2 suffices.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+from collections import defaultdict
+from itertools import combinations
+from math import comb
+from typing import Iterator, Sequence
+
+
+def paf(seq: Sequence[int], s: int) -> int:
+    """Periodic autocorrelation of ``seq`` at shift ``s``."""
+    ell = len(seq)
+    return sum(seq[k] * seq[(k + s) % ell] for k in range(ell))
+
+
+def is_legendre_pair(
+    a: Sequence[int],
+    b: Sequence[int],
+    check_normalization: bool = False,
+) -> tuple[bool, str]:
+    """Return (True, "") if (a, b) is a Legendre pair, else (False, reason).
+
+    Parameters
+    ----------
+    a, b : sequences of +1/-1 of the same odd length ell.
+    check_normalization : if True, also require sum(a) == sum(b) == 1
+        (the w.l.o.g. normalization condition (1) in the paper).
+    """
+    if len(a) != len(b):
+        return False, f"lengths differ: {len(a)} vs {len(b)}"
+
+    ell = len(a)
+    if ell == 0:
+        return False, "empty sequences"
+    if ell % 2 == 0:
+        return False, f"length {ell} is even; Legendre pairs have odd length"
+
+    for name, seq in (("A", a), ("B", b)):
+        bad = {x for x in seq if x not in (-1, 1)}
+        if bad:
+            return False, f"sequence {name} has entries outside {{-1,+1}}: {sorted(bad)}"
+
+    if check_normalization:
+        for name, seq in (("A", a), ("B", b)):
+            if sum(seq) != 1:
+                return False, f"sequence {name} fails normalization sum==1 (got {sum(seq)})"
+
+    for s in range(1, (ell - 1) // 2 + 1):
+        total = paf(a, s) + paf(b, s)
+        if total != -2:
+            return False, f"PAF_A({s})+PAF_B({s}) = {total} != -2"
+
+    return True, ""
+
+
+def paf_profile(seq: Sequence[int]) -> list[int]:
+    """Full PAF vector [PAF(0), PAF(1), ..., PAF(ell-1)] (useful for debugging)."""
+    return [paf(seq, s) for s in range(len(seq))]
+
+
+def _paf_key(seq: Sequence[int], half: int) -> tuple[int, ...]:
+    """PAF vector (PAF(1), ..., PAF(half)) computed in one pass."""
+    ell = len(seq)
+    return tuple(sum(seq[k] * seq[(k + s) % ell] for k in range(ell)) for s in range(1, half + 1))
+
+
+Bucket = dict  # tuple[int,...] -> list[tuple[int,...]]
+
+
+def _minus_counts(ell: int, normalized: bool) -> tuple[int, ...]:
+    """Number of -1 entries giving sum == +1 (and, unless normalized, -1)."""
+    if normalized:
+        return ((ell - 1) // 2,)
+    return ((ell - 1) // 2, (ell + 1) // 2)
+
+
+def _candidate_total(ell: int, normalized: bool) -> int:
+    """How many +-1 candidate sequences the search will scan (known upfront)."""
+    return sum(comb(ell, m) for m in _minus_counts(ell, normalized))
+
+
+class _Progress:
+    """Minimal dependency-free progress bar, rendered to stderr.
+
+    Kept off the hot loop's critical path: callers update it in coarse batches
+    (serial) or once per completed chunk (parallel), and rendering is throttled
+    to ~10 fps so it never dominates runtime.
+    """
+
+    def __init__(self, total: int, enabled: bool):
+        self.total = total
+        self.enabled = enabled
+        self.done = 0
+        self._t0 = time.time()
+        self._last = 0.0
+
+    def _render(self, force: bool) -> None:
+        if not self.enabled:
+            return
+        now = time.time()
+        if not force and now - self._last < 0.1:
+            return
+        self._last = now
+        frac = min(self.done / self.total, 1.0) if self.total else 1.0
+        width = 30
+        filled = int(width * frac)
+        bar = "#" * filled + "." * (width - filled)
+        rate = self.done / (now - self._t0 + 1e-9)
+        sys.stderr.write(
+            f"\r[{bar}] {self.done:,}/{self.total:,} ({frac * 100:5.1f}%)  {rate:,.0f} seq/s"
+        )
+        sys.stderr.flush()
+
+    def update(self, n: int = 1) -> None:
+        self.done += n
+        self._render(force=False)
+
+    def update_to(self, done: int) -> None:
+        self.done = done
+        self._render(force=False)
+
+    def close(self) -> None:
+        if self.enabled:
+            self.done = self.total
+            self._render(force=True)
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+
+def _iter_candidates(ell: int, normalized: bool) -> Iterator[tuple[int, ...]]:
+    """Enumerate exactly the +-1 sequences with sum in the allowed set.
+
+    Generated by choosing which positions hold -1, so we never touch the
+    2^ell sequences whose sum rules them out of any Legendre pair.
+    """
+    for m in _minus_counts(ell, normalized):
+        for minus in combinations(range(ell), m):
+            seq = [1] * ell
+            for i in minus:
+                seq[i] = -1
+            yield tuple(seq)
+
+
+def _bucket_worker(payload) -> Bucket:
+    """Build partial PAF buckets for one stripe of the candidate space.
+
+    Every worker walks the same candidate enumeration but only computes the
+    (expensive) PAF vector for candidates whose index == worker_id mod workers.
+    Top-level so it is picklable by ProcessPoolExecutor.
+    """
+    ell, half, normalized, worker_id, workers = payload
+    buckets: Bucket = defaultdict(list)
+    for idx, seq in enumerate(_iter_candidates(ell, normalized)):
+        if idx % workers == worker_id:
+            buckets[_paf_key(seq, half)].append(seq)
+    return dict(buckets)
+
+
+def _match_buckets(
+    buckets: Bucket, limit: int | None
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Pair each bucket ``v`` with its complement ``-2 - v`` and yield pairs."""
+    count = 0
+    for v, a_list in buckets.items():
+        b_list = buckets.get(tuple(-2 - x for x in v))
+        if not b_list:
+            continue
+        for a in a_list:
+            for b in b_list:
+                yield a, b
+                count += 1
+                if limit is not None and count >= limit:
+                    return
+
+
+def find_legendre_pairs(
+    ell: int,
+    normalized: bool = False,
+    limit: int | None = None,
+    progress: bool = False,
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Yield Legendre pairs (a, b) of odd length ``ell`` (serial).
+
+    Strategy
+    --------
+    Any Legendre pair satisfies (sum a)^2 + (sum b)^2 = 2, hence sum a, sum b
+    in {+1, -1}. We enumerate only those sequences, bucket them by their PAF
+    vector, and match each bucket ``v`` against the complementary bucket
+    ``-2 - v``. This replaces the naive O(4^ell) double loop with a single pass
+    over C(ell, (ell+-1)/2) candidates plus hash lookups.
+
+    Parameters
+    ----------
+    ell : odd length.
+    normalized : if True, restrict to sum == +1 (canonical representatives, i.e.
+        pairs up to global negation). If False, also include sum == -1
+        sequences, yielding every ordered pair.
+    limit : stop after yielding this many pairs (None = all).
+    progress : if True, draw a progress bar for the candidate scan on stderr.
+    """
+    if ell <= 0 or ell % 2 == 0:
+        raise ValueError(f"ell must be a positive odd integer, got {ell}")
+
+    half = (ell - 1) // 2
+    buckets: Bucket = defaultdict(list)
+    if progress:
+        prog = _Progress(_candidate_total(ell, normalized), enabled=True)
+        for i, seq in enumerate(_iter_candidates(ell, normalized)):
+            buckets[_paf_key(seq, half)].append(seq)
+            if i & 0x1FFF == 0:  # refresh ~ every 8192 candidates
+                prog.update_to(i)
+        prog.close()
+    else:
+        for seq in _iter_candidates(ell, normalized):
+            buckets[_paf_key(seq, half)].append(seq)
+    yield from _match_buckets(buckets, limit)
+
+
+def find_legendre_pairs_parallel(
+    ell: int,
+    normalized: bool = False,
+    limit: int | None = None,
+    workers: int | None = None,
+    progress: bool = False,
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Parallel counterpart of :func:`find_legendre_pairs`.
+
+    The bucket-building phase (candidate enumeration + PAF computation), which
+    dominates the runtime, is split across ``workers`` processes by striping the
+    candidate index space. Partial buckets are merged in the parent, then the
+    (cheap) complement matching runs serially. Results are identical to the
+    serial version as a set; ordering may differ.
+
+    ``workers`` defaults to os.cpu_count(). With workers == 1 this simply
+    delegates to the serial implementation. When ``progress`` is set, the work
+    is split into more chunks than workers so the stderr bar advances smoothly
+    as chunks finish.
+    """
+    if ell <= 0 or ell % 2 == 0:
+        raise ValueError(f"ell must be a positive odd integer, got {ell}")
+
+    if workers is None:
+        workers = os.cpu_count() or 1
+    if workers <= 1:
+        yield from find_legendre_pairs(
+            ell, normalized=normalized, limit=limit, progress=progress
+        )
+        return
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    half = (ell - 1) // 2
+    nchunks = workers * 4 if progress else workers
+    payloads = [(ell, half, normalized, cid, nchunks) for cid in range(nchunks)]
+
+    prog = _Progress(_candidate_total(ell, normalized), enabled=progress)
+    merged: Bucket = defaultdict(list)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_bucket_worker, p) for p in payloads]
+        for fut in as_completed(futures):
+            partial = fut.result()
+            scanned = 0
+            for key, seqs in partial.items():
+                merged[key].extend(seqs)
+                scanned += len(seqs)
+            prog.update(scanned)
+    prog.close()
+
+    yield from _match_buckets(merged, limit)
+
+
+def find_legendre_pairs_incremental(
+    ell: int,
+    normalized: bool = False,
+    limit: int | None = None,
+    progress: bool = False,
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Discover pairs *during* the candidate scan, with true early stop.
+
+    Unlike the batch functions, this does not pre-build all buckets. For each
+    candidate it checks whether a complementary sequence has already been seen
+    and, if so, emits a pair immediately. With ``limit`` set (e.g. 1) the scan
+    halts the moment that many pairs are found, so the common "just find one"
+    case usually returns after touching only a tiny fraction of the candidates.
+
+    A pair exists here iff one exists at all, so this is complete for existence
+    testing. It yields one representative ordering per solution as it is
+    discovered -- not every ordered (a, b) pair like the batch functions -- so
+    use :func:`find_legendre_pairs` when you need the full enumeration/counts.
+    """
+    if ell <= 0 or ell % 2 == 0:
+        raise ValueError(f"ell must be a positive odd integer, got {ell}")
+
+    half = (ell - 1) // 2
+    prog = _Progress(_candidate_total(ell, normalized), enabled=progress)
+    buckets: Bucket = defaultdict(list)
+    count = 0
+    for i, seq in enumerate(_iter_candidates(ell, normalized)):
+        key = _paf_key(seq, half)
+        comp = tuple(-2 - x for x in key)
+        partners = buckets.get(comp)
+        if partners:  # a complementary sequence was already seen -> pair found
+            for b in partners:
+                yield seq, b
+                count += 1
+                if limit is not None and count >= limit:
+                    prog.close()
+                    return
+        elif key == comp:  # self-complementary: (seq, seq) is itself a pair
+            yield seq, seq
+            count += 1
+            if limit is not None and count >= limit:
+                prog.close()
+                return
+        buckets[key].append(seq)
+        if progress and i & 0x1FFF == 0:
+            prog.update_to(i)
+    prog.close()
+
+
+def find_one_legendre_pair(ell: int, normalized: bool = True):
+    """Return a single Legendre pair (a, b) for length ``ell``, or None.
+
+    Uses the incremental scan, so it stops as soon as the first pair is found
+    rather than scanning every candidate.
+    """
+    for pair in find_legendre_pairs_incremental(ell, normalized=normalized, limit=1):
+        return pair
+    return None
+
+
+def _fmt(seq: Sequence[int]) -> str:
+    """Compact +/- rendering of a +1/-1 sequence, e.g. ++- ."""
+    return "".join("+" if x == 1 else "-" for x in seq)
+
+
+def _main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Search for Legendre pairs of a given odd length ell "
+        "(PAF_A(s) + PAF_B(s) = -2).",
+    )
+    parser.add_argument(
+        "ell",
+        type=int,
+        help="length of the Legendre pair (must be a positive odd integer)",
+    )
+    parser.add_argument(
+        "-n",
+        "--count",
+        type=int,
+        default=1,
+        metavar="N",
+        help="number of pairs to report; use 0 for all (default: 1)",
+    )
+    parser.add_argument(
+        "-a",
+        "--all-sums",
+        action="store_true",
+        help="also include sum=-1 sequences (every ordered pair) instead of "
+        "only canonical sum=+1 representatives",
+    )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=os.cpu_count() or 1,
+        metavar="N",
+        help="number of worker processes (default: all %d CPUs; use 1 for serial)"
+        % (os.cpu_count() or 1),
+    )
+    parser.add_argument(
+        "-P",
+        "--progress",
+        action="store_true",
+        help="show a progress bar (on stderr) for the candidate scan",
+    )
+    parser.add_argument(
+        "-1",
+        "--first",
+        action="store_true",
+        help="incremental early-stop scan: stop the moment a pair is found "
+        "(serial; fastest way to get one pair). Ignores --jobs.",
+    )
+    args = parser.parse_args()
+
+    if args.ell <= 0 or args.ell % 2 == 0:
+        parser.error(f"ell must be a positive odd integer, got {args.ell}")
+    if args.jobs < 1:
+        parser.error(f"--jobs must be >= 1, got {args.jobs}")
+
+    limit = None if args.count == 0 else args.count
+    normalized = not args.all_sums
+
+    t0 = time.time()
+    found = 0
+    if args.first:
+        search = find_legendre_pairs_incremental(
+            args.ell, normalized=normalized, limit=limit, progress=args.progress
+        )
+    else:
+        search = find_legendre_pairs_parallel(
+            args.ell,
+            normalized=normalized,
+            limit=limit,
+            workers=args.jobs,
+            progress=args.progress,
+        )
+    for a, b in search:
+        found += 1
+        print(f"pair {found}:")
+        print(f"  A = {_fmt(a)}   {list(a)}")
+        print(f"  B = {_fmt(b)}   {list(b)}")
+    dt = time.time() - t0
+
+    if found == 0:
+        print(f"No Legendre pair found for ell={args.ell}.")
+        return 1
+    how = "incremental early-stop scan" if args.first else f"{args.jobs} worker(s)"
+    print(f"\nFound {found} pair(s) for ell={args.ell} in {dt:.3f}s using {how}.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
