@@ -298,6 +298,7 @@ def search(
     max_seconds: float | None = None,
     progress: bool = False,
     progress_every: int = 1000,
+    on_restart=None,
 ):
     """Search for a Legendre pair of length ell by local search.
 
@@ -306,6 +307,10 @@ def search(
     time is exceeded between restarts. If ``progress`` is set, a one-line
     stderr bar shows the current attempt, step, objective E and best E,
     refreshed every ``progress_every`` steps.
+
+    ``on_restart``, if given, is called ``on_restart(r, overall_best)`` after
+    each completed restart -- used by ``parallel_search`` to report progress
+    from a worker process back to the parent.
     """
     if ell <= 0 or ell % 2 == 0:
         raise ValueError(f"ell must be a positive odd integer, got {ell}")
@@ -327,6 +332,8 @@ def search(
         if overall_best is None or best_E < overall_best:
             overall_best = best_E
         reporter.note_best(best_E)
+        if on_restart is not None:
+            on_restart(r, overall_best)
         if solved:
             reporter.close()
             return {

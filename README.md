@@ -118,8 +118,13 @@ for reproducibility. This
 is a **constant-factor** win (≈ number of physical cores); it does not touch the
 exponential scaling.
 
+- **Live progress (`-P`):** a global stderr bar fed by one message per completed
+  restart from every worker — shows `restarts done / budget`, percent, and the
+  best $E$ seen so far. A parent-side listener thread renders it while the main
+  thread blocks on results; on the first solution the workers are terminated and
+  an authoritative final frame is drawn.
 - **CLI:** `python3 src/parallel_search.py ELL -s STRATEGY [-r RESTARTS]
-  [-n STEPS] [-j JOBS] [--seed S]`.
+  [-n STEPS] [-j JOBS] [--seed S] [-P]`.
 
 ### `incremental_paf.py` — O(ell) PAF update (prototype for GPU populations)
 Recomputing $\mathrm{PAF}(1..\tfrac{\ell-1}{2})$ from scratch after a flip costs
@@ -237,7 +242,7 @@ python3 src/legendre.py 13 -1                 # find one pair of length 13, fast
 python3 src/legendre.py 13 -a -j4 -P          # all ordered pairs, 4 procs, progress
 python3 src/local_search.py 21 -s anneal      # simulated annealing
 python3 src/local_search.py 21 -s basinhop    # iterated local search
-python3 src/parallel_search.py 21 -s anneal -j4   # restarts across CPU cores
+python3 src/parallel_search.py 21 -s anneal -j4 -P  # restarts across cores, live bar
 python3 src/incremental_paf.py --verify --bench   # O(ell) PAF update: check + time
 
 # experiments (each writes into results/)
