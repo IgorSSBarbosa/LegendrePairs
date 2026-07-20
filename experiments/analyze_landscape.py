@@ -27,10 +27,16 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 import statistics
+import sys
 from collections import Counter
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+os.makedirs(_RESULTS, exist_ok=True)
 
 from local_search import _accept, objective, paf_vector, random_sum_one
 
@@ -133,7 +139,7 @@ def main() -> int:
     p.add_argument("--t0", type=float, default=3.0)
     p.add_argument("--t-end", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--png", default="landscape_analysis.png")
+    p.add_argument("--png", default=os.path.join(_RESULTS, "landscape_analysis.png"))
     args = p.parse_args()
 
     if args.ell <= 0 or args.ell % 2 == 0:

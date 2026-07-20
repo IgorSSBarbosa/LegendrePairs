@@ -22,9 +22,15 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import time
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+os.makedirs(_RESULTS, exist_ok=True)
 
 from legendre import find_one_legendre_pair, is_legendre_pair
 from local_search import search
@@ -146,7 +152,7 @@ def main() -> int:
     p.add_argument("--t0", type=float, default=3.0)
     p.add_argument("--t-end", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=0, help="RNG seed (default 0)")
-    p.add_argument("--out", default="found_pairs.md")
+    p.add_argument("--out", default=os.path.join(_RESULTS, "found_pairs.md"))
     args = p.parse_args()
 
     lengths = list(range(args.min | 1, args.max + 1, 2))

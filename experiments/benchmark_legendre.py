@@ -31,9 +31,15 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
+import sys
 import time
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+os.makedirs(_RESULTS, exist_ok=True)
 
 from legendre import _candidate_total, _iter_candidates, _paf_key
 
@@ -176,8 +182,8 @@ def main() -> int:
                         help="min seconds per length for stable timing (default 0.3)")
     parser.add_argument("--all-sums", action="store_true",
                         help="scan sum=+-1 space instead of the sum=+1 canonical space")
-    parser.add_argument("--csv", default="benchmark_results.csv")
-    parser.add_argument("--png", default="benchmark_legendre_pairs.png")
+    parser.add_argument("--csv", default=os.path.join(_RESULTS, "benchmark_results.csv"))
+    parser.add_argument("--png", default=os.path.join(_RESULTS, "benchmark_legendre_pairs.png"))
     args = parser.parse_args()
 
     normalized = not args.all_sums

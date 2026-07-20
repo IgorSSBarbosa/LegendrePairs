@@ -17,6 +17,28 @@ Everything is Python 3 + NumPy. Run with `python3` (not `python`).
 
 ---
 
+## Repository layout
+
+```
+legendre_pairs/
+├── src/          # importable core: checker + search engines
+│   ├── legendre.py          # checker + exhaustive PAF-bucket search
+│   ├── local_search.py      # objective + local-search strategies
+│   ├── parallel_search.py   # multiprocessing over restarts (NEW)
+│   └── incremental_paf.py   # O(ell) rank-2 PAF update, batched (NEW)
+├── experiments/  # analyses & benchmarks (each writes into results/)
+│   ├── benchmark_legendre.py  benchmark_methods.py  analyze_landscape.py
+│   ├── measure_flip_scaling.py  continuous_descent.py  collect_pairs.py
+├── tests/        # test_legendre.py
+└── results/      # generated .png / .csv / found_pairs.md
+```
+
+Scripts in `experiments/` and `tests/` add `../src` to `sys.path` at import time,
+so run them by path (e.g. `python3 experiments/benchmark_methods.py`) from the
+repo root — no install or `PYTHONPATH` needed.
+
+---
+
 ## The Python files
 
 ### `legendre.py` — checker + exhaustive search
@@ -35,7 +57,7 @@ The foundational module.
     `ProcessPoolExecutor`, striping the candidate index space — bypasses the GIL),
   - `find_legendre_pairs_incremental` (checks each candidate against already-seen
     complements, so with `limit=1` it **early-stops** the instant a pair exists).
-- **CLI:** `python3 legendre.py ELL [-n N] [-a] [-j JOBS] [-P] [-1]`
+- **CLI:** `python3 src/legendre.py ELL [-n N] [-a] [-j JOBS] [-P] [-1]`
   (`-1` = incremental early-stop, `-P` = progress bar on stderr).
 - `_Progress` is a dependency-free stderr progress bar throttled to ~10 fps.
 
@@ -82,8 +104,41 @@ $$E(A,B) = \sum_{s=1}^{(\ell-1)/2}\big(\mathrm{PAF}_A(s)+\mathrm{PAF}_B(s)+2\big
     min, then repeatedly {snapshot, kick by a few random swaps, re-descend},
     accepting the new basin if no worse; the kick grows on a run of rejections.
     Reuses structure across basins instead of rerolling everything.
-- **CLI:** `python3 local_search.py ELL -s STRATEGY [-r RESTARTS] [-n STEPS]
+- **CLI:** `python3 src/local_search.py ELL -s STRATEGY [-r RESTARTS] [-n STEPS]
   [--t0 T0] [--t-end TEND] [--seed S]`.
+
+### `parallel_search.py` — the restarts, across CPU cores
+The restarts of `local_search.search` are independent random walks that all stop
+the instant one hits $E=0$, so they are **embarrassingly parallel**. This module
+splits the `restarts` budget into chunks, farms them to a `ProcessPoolExecutor`
+(one interpreter per core, bypassing the GIL), and returns the first solution —
+cancelling the rest. Task $i$ is seeded `seed + 7919*i` for reproducibility. This
+is a **constant-factor** win (≈ number of physical cores); it does not touch the
+exponential scaling.
+
+- **CLI:** `python3 src/parallel_search.py ELL -s STRATEGY [-r RESTARTS]
+  [-n STEPS] [-j JOBS] [--seed S]`.
+
+### `incremental_paf.py` — O(ell) PAF update (prototype for GPU populations)
+Recomputing $\mathrm{PAF}(1..\tfrac{\ell-1}{2})$ from scratch after a flip costs
+$O(\ell\log\ell)$ (FFT). But a single-entry flip $a_p\to-a_p$ changes PAF by a
+closed-form rank-2 update
+
+$$\mathrm{PAF}(s)\;\mathrel{+}=\;-2\,a_p\big(a_{(p+s)\bmod\ell}+a_{(p-s)\bmod\ell}\big),$$
+
+costing $O(\ell)$; a swap is two such flips applied in sequence (so neighbour
+interactions stay exact). The module provides a single-sequence version, a
+**batched `(W, ell)` version over $W$ walkers**, a verification that the
+incremental PAF matches the FFT PAF exactly, and a throughput micro-benchmark.
+
+- **Finding:** on CPU/NumPy the batched incremental update is actually *slower*
+  than an FFT recompute (≈ 0.3–0.6×) — NumPy's per-op overhead and a very
+  optimized `rfft` dominate at these sizes. Its purpose is the **GPU population**
+  route: the update is a few gathers + a multiply-add, so thousands of walkers
+  fuse into one kernel while the tiny per-walker FFT is latency-bound. That is
+  what enables parallel tempering / population annealing at scale.
+- **CLI:** `python3 src/incremental_paf.py [--verify] [--bench]
+  [--ells ...] [--walkers ...]`.
 
 ### `benchmark_methods.py` — exhaustive vs. local search
 For each $\ell$ it reports the exhaustive scan time (one number) against each
@@ -143,6 +198,8 @@ and the algorithm parameters. Every tabulated pair is re-verified by
 | 7 | **Flip-size conjecture: $\Delta E \sim \sqrt{\ell}$?** | `measure_flip_scaling.py` | ❌ Measured exponent $p \approx 1.06$ — **linear in $\ell$**, not $\sqrt\ell$. Both the gradient and curvature terms are $O(\ell)$. |
 | 8 | **Magnitude-threshold heuristic** (reroll if $E>20\ell$, else descend) and **basin-hopping** (kick + re-descend). | `local_search.py`, `benchmark_methods.py` | ⏳ Implemented; competitive with annealing on $\ell\le 21$ (all 100% success). Discriminating them needs the harder $\ell\ge 23$ regime. |
 | 9 | **Continuous gradient descent** on the relaxed quartic, step $x\!\leftarrow\!x-\frac{1}{2\ell}\nabla E$, then round to signs. | `continuous_descent.py` | ❌ Raw step **diverges** (gradient $\sim x^3$); stable variants converge to non-binary critical points → rounding gives $E>0$. Found 0 pairs (bar a trivial $\ell=5$ fluke). |
+| 10 | **Parallelize the restarts** across CPU cores; return the first $E=0$ and cancel the rest. | `parallel_search.py` | ✅ Near-linear (core-count) speed-up, reproducible per seed. Constant factor only — scaling unchanged. |
+| 11 | **Incremental $O(\ell)$ PAF update** (rank-2 per flip), batched over $W$ walkers. | `incremental_paf.py` | ⚖️ Verified exact vs. FFT. Loses to `rfft` on CPU/NumPy; the point is GPU population-parallelism (tempering / population annealing). |
 
 ### Selected quantitative results
 
@@ -159,31 +216,38 @@ and the algorithm parameters. Every tabulated pair is re-verified by
 ### Where this points
 The productive direction is **not** continuous optimization but better
 plateau-escape: simulated annealing with restarts, and the newer
-`threshold` / `basinhop` iterated-local-search variants. The next discriminating
-experiment is a stress test at $\ell = 23$–$31$, where success rates finally
-separate the methods.
+`threshold` / `basinhop` iterated-local-search variants, run as a **parallel
+population**. The cheap, certain win is `parallel_search.py` (restarts across
+cores); the ambitious route is a GPU population using the `incremental_paf.py`
+update, enabling parallel tempering / population annealing. Neither changes the
+exponential scaling — the next discriminating experiment is still a stress test
+at $\ell = 23$–$31$, where success rates finally separate the methods.
 
 ---
 
 ## Quick start
 
+Run everything from the repo root.
+
 ```bash
-# verify a proposed pair
-python3 legendre.py 13 -1                 # find one pair of length 13, fast
-python3 legendre.py 13 -a -j4 -P          # all ordered pairs, 4 procs, progress
+# core search (src/)
+python3 src/legendre.py 13 -1                 # find one pair of length 13, fast
+python3 src/legendre.py 13 -a -j4 -P          # all ordered pairs, 4 procs, progress
+python3 src/local_search.py 21 -s anneal      # simulated annealing
+python3 src/local_search.py 21 -s basinhop    # iterated local search
+python3 src/parallel_search.py 21 -s anneal -j4   # restarts across CPU cores
+python3 src/incremental_paf.py --verify --bench   # O(ell) PAF update: check + time
 
-# optimization search
-python3 local_search.py 21 -s anneal      # simulated annealing
-python3 local_search.py 21 -s basinhop    # iterated local search
+# experiments (each writes into results/)
+python3 experiments/benchmark_legendre.py --max 21   # brute-force cost + ell=115 extrap.
+python3 experiments/benchmark_methods.py  --max 21   # exhaustive vs local search
+python3 experiments/analyze_landscape.py  --ell 23   # ruggedness / plateaus
+python3 experiments/measure_flip_scaling.py          # flip-size scaling test
+python3 experiments/continuous_descent.py --normalize # continuous GD (does it work? no)
+python3 experiments/collect_pairs.py --min 5 --max 21 # write results/found_pairs.md
 
-# experiments
-python3 benchmark_legendre.py --max 21    # brute-force cost + ell=115 extrapolation
-python3 benchmark_methods.py  --max 21    # exhaustive vs local search
-python3 analyze_landscape.py  --ell 23    # ruggedness / plateaus
-python3 measure_flip_scaling.py           # flip-size scaling test
-python3 continuous_descent.py --normalize # continuous GD (does it work? no)
-python3 collect_pairs.py --min 5 --max 21 # write found_pairs.md (table per method)
-python3 -m pytest test_legendre.py        # tests  (or: python3 test_legendre.py)
+# tests
+python3 tests/test_legendre.py                # (or: python3 -m pytest tests/)
 ```
 
 All randomised scripts take `--seed` (default 0), so every run above is

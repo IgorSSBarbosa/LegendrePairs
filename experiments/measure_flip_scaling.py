@@ -18,8 +18,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+os.makedirs(_RESULTS, exist_ok=True)
 
 from local_search import objective, paf_vector, random_sum_one
 
@@ -59,7 +65,7 @@ def main() -> int:
     p.add_argument("--configs", type=int, default=120)
     p.add_argument("--swaps", type=int, default=120)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--png", default="flip_scaling.png")
+    p.add_argument("--png", default=os.path.join(_RESULTS, "flip_scaling.png"))
     args = p.parse_args()
 
     lengths = [11, 15, 21, 31, 41, 61, 81, 101, 151, 201]

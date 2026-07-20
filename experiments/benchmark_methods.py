@@ -32,10 +32,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import statistics
+import sys
 import time
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+os.makedirs(_RESULTS, exist_ok=True)
 
 from benchmark_legendre import scan_time
 from local_search import search
@@ -73,8 +79,8 @@ def main() -> int:
     p.add_argument("--cap", type=float, default=4.0, help="wall-clock cap per trial (s)")
     p.add_argument("--scan-min-time", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=0, help="base RNG seed (default 0)")
-    p.add_argument("--csv", default="benchmark_methods.csv")
-    p.add_argument("--png", default="benchmark_methods.png")
+    p.add_argument("--csv", default=os.path.join(_RESULTS, "benchmark_methods.csv"))
+    p.add_argument("--png", default=os.path.join(_RESULTS, "benchmark_methods.png"))
     args = p.parse_args()
 
     lengths = list(range(args.min | 1, args.max + 1, 2))

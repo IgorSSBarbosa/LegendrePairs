@@ -42,8 +42,14 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "results")
+os.makedirs(_RESULTS, exist_ok=True)
 
 from legendre import is_legendre_pair
 from local_search import objective, paf_vector
@@ -145,7 +151,7 @@ def main() -> int:
     p.add_argument("--project", choices=["none", "clip", "sphere"], default="none",
                    help="keep iterates bounded: clip to [-1,1] or rescale to ||x||=sqrt(ell)")
     p.add_argument("--seed", type=int, default=0, help="RNG seed (default 0)")
-    p.add_argument("--png", default="continuous_descent.png")
+    p.add_argument("--png", default=os.path.join(_RESULTS, "continuous_descent.png"))
     args = p.parse_args()
 
     if args.ell <= 0 or args.ell % 2 == 0:

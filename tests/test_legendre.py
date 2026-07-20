@@ -1,6 +1,10 @@
 """Sanity tests / demo for the Legendre-pair checker."""
 
+import os
+import sys
 from itertools import product
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from legendre import (
     find_legendre_pairs,
