@@ -43,6 +43,12 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from legendre_pairs import is_legendre_pair  # noqa: E402
 
+try:                                    # optional progress bar
+    from tqdm import tqdm
+except Exception:                       # pragma: no cover - tqdm is optional
+    def tqdm(it=None, **kw):
+        return it if it is not None else iter(())
+
 
 # --------------------------------------------------------------------------- #
 # objective (batched)
@@ -237,17 +243,24 @@ def min_swaps_to_lp(u: np.ndarray, v: np.ndarray, bu: np.ndarray,
     return int(d.min())
 
 
-def sample_E_vs_distance(ell: int, n_seeds: int = 300, seed: int = 0):
+def sample_E_vs_distance(ell: int, n_seeds: int = 300, seed: int = 0,
+                         progress: bool = True):
     """For random normalized seeds, pair (objective E, true swap-distance to the
     nearest LP). The distance is a per-seed LOWER BOUND on the kick radius needed
-    to solve from that seed. Returns ``(E_array, dist_array)``."""
+    to solve from that seed. Returns ``(E_array, dist_array)``.
+
+    The per-seed nearest-LP scan is the slow part (linear in the LP-set size), so
+    it shows a progress bar unless ``progress=False``."""
     bu, bv = load_lp_pairs(ell)
     rng = np.random.default_rng(seed)
     U = random_normalized(n_seeds, ell, rng)
     V = random_normalized(n_seeds, ell, rng)
     E = objective_batch(U, V)
-    dist = np.array([min_swaps_to_lp(U[i], V[i], bu, bv)
-                     for i in range(n_seeds)], dtype=np.int64)
+    dist = np.fromiter(
+        (min_swaps_to_lp(U[i], V[i], bu, bv)
+         for i in tqdm(range(n_seeds), desc=f"ell={ell} dist",
+                       disable=not progress)),
+        dtype=np.int64, count=n_seeds)
     return E, dist
 
 
