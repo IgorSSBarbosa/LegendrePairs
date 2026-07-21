@@ -1,0 +1,6 @@
+ell,strategy,trials,solved,success_rate,median_time_s,mean_time_s,median_steps,median_restarts,budget_restarts,budget_steps,max_seconds
+13,anneal,8,8,1.0000,0.009502,0.011043,281,1,150,10000,8.0
+15,anneal,8,8,1.0000,0.011071,0.016604,503,1,150,10000,8.0
+17,anneal,8,8,1.0000,0.047021,0.043960,2742,1,150,10000,8.0
+19,anneal,8,8,1.0000,0.186191,0.202409,11312,1,150,10000,8.0
+21,anneal,8,8,1.0000,0.355212,0.412974,21276,2,150,10000,8.0
