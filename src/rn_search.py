@@ -142,6 +142,7 @@ def search_rn(ell: int, r: int, n: int, seed: int = 0,
     # --- Step 1: restart until a batch minimum falls under the gate ---------- #
     best_u = best_v = None
     best_E = None
+    seen_min_E = None                       # smallest E seen, even if gate never passed
     batches = 0
     for batches in range(1, max_batches + 1):
         U = random_normalized(r, ell, rng)
@@ -149,6 +150,8 @@ def search_rn(ell: int, r: int, n: int, seed: int = 0,
         E = objective_batch(U, V)
         evals += r
         k = int(E.argmin())
+        if seen_min_E is None or E[k] < seen_min_E:
+            seen_min_E = int(E[k])
         if E[k] == 0:                       # struck a pair while sampling
             return _solved(ell, U[k], V[k], evals, batches, 0, entered_step2=False)
         if E[k] <= tau:
@@ -158,8 +161,10 @@ def search_rn(ell: int, r: int, n: int, seed: int = 0,
             break
     else:
         if verbose:
-            print(f"[rn] gate never passed in {max_batches} batches (tau={tau})")
+            print(f"[rn] gate never passed in {max_batches} batches: "
+                  f"tau={tau}, smallest E seen={seen_min_E}")
         return {"solved": False, "u": None, "v": None, "best_E": None,
+                "seen_min_E": seen_min_E, "gate_tau": tau,
                 "evals": evals, "batches": batches, "rounds": 0,
                 "entered_step2": False, "reason": "step1_budget_exhausted"}
 
@@ -296,8 +301,15 @@ def main() -> int:
             print(f"  u = {list(map(int, res['u']))}")
             print(f"  v = {list(map(int, res['v']))}")
             return 0
-        print(f"NOT FOUND ell={args.ell} (r={args.r}, n={args.n}): "
-              f"{res['reason']}, best_E={res['best_E']}, evals={res['evals']}")
+        if res["reason"] == "step1_budget_exhausted":
+            print(f"NOT FOUND ell={args.ell} (r={args.r}, n={args.n}): "
+                  f"gate never reached, evals={res['evals']}")
+            print(f"  smallest E seen={res['seen_min_E']} vs gate tau={res['gate_tau']:.1f}"
+                  f"  ->  the E<=tau gate is unreachable by random restart; Step 2 "
+                  f"never fired. Run 'calibrate {args.ell}' to see why.")
+        else:
+            print(f"NOT FOUND ell={args.ell} (r={args.r}, n={args.n}): "
+                  f"{res['reason']}, best_E={res['best_E']}, evals={res['evals']}")
         return 1
 
     E, dist = sample_E_vs_distance(args.ell, n_seeds=args.seeds, seed=args.seed)
