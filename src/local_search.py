@@ -24,15 +24,29 @@ Acceptance strategies
 * sideways : accept if E does not increase (also walks equal-E plateaus).
 * anneal   : Metropolis / simulated annealing -- accept a worse move with
              probability exp(-dE / T), T cooled geometrically. Greedy is the
-             T -> 0 special case. This is what reliably reaches E = 0.
+             T -> 0 special case. This is what reliably reaches E = 0. Pass
+             ``t0=None`` (CLI ``--auto-t0``) to auto-calibrate the start
+             temperature so a typical uphill move is accepted with prob ~0.8.
+* basinhop : iterated local search -- greedy-descend to a local min, then kick
+             by a few random swaps and re-descend, escalating the kick when
+             stuck (accept-worse at the *basin* level).
+* threshold: reroll a fresh config whenever E exceeds c*ell, else greedy-descend.
 
-PAF vectors are computed with an FFT (periodic autocorrelation), so each move
-costs O(ell log ell) and the method scales to much larger ell than brute force.
+Incremental objective
+----------------------
+A 2-swap is a rank-2 change to one PAF, so the exact integer change in the
+half-shift PAF vector -- and hence in E -- is computed in O(ell) per move by
+``_dpaf`` (no FFT in the inner loop).  ``paf_vector`` (an FFT) is used only to
+seed the initial PAF of each restart.  The residual r = PAF_A + PAF_B + 2 is
+carried and updated in place; E = <r, r>.  This is behaviour-identical to (and a
+constant-factor faster than) recomputing the FFT every step -- the RNG stream and
+every acceptance decision are unchanged, so runs stay reproducible.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -93,6 +107,53 @@ def random_sum_one(ell: int, rng: np.random.Generator) -> np.ndarray:
     return seq
 
 
+def _dpaf(seq: np.ndarray, p: int, q: int, half: int) -> np.ndarray:
+    """Exact change in [PAF(1..half)] from swapping seq[p] (a +1) with seq[q] (-1).
+
+    A 2-swap flips the sign at p and q, so seq' = seq + d with d nonzero only at
+    p, q (d_p = -2 seq_p, d_q = -2 seq_q).  Then, for each shift s,
+        dPAF(s) = sum_i [ seq_i d_{i+s} + d_i seq_{i+s} + d_i d_{i+s} ] ,
+    evaluated over s = 1..half in O(ell).  The quadratic term d_i d_{i+s} is
+    nonzero only at the shift |p-q| (and its mirror), handled explicitly."""
+    ell = seq.shape[0]
+    dp = -2 * int(seq[p])                    # = -2  (seq[p] = +1)
+    dq = -2 * int(seq[q])                    # = +2  (seq[q] = -1)
+    x = seq.astype(np.int64)
+    s = np.arange(1, half + 1)
+    A = dp * x[(p - s) % ell] + dq * x[(q - s) % ell]
+    B = dp * x[(p + s) % ell] + dq * x[(q + s) % ell]
+    d = A + B
+    for shift in ((q - p) % ell, (p - q) % ell):   # quadratic (self) term
+        if 1 <= shift <= half:
+            d[shift - 1] += dp * dq
+    return d
+
+
+def _pick_swap(seq, rng):
+    """A (+1 index, -1 index) pair to swap in ``seq``."""
+    plus = np.flatnonzero(seq == 1)
+    minus = np.flatnonzero(seq == -1)
+    return int(plus[rng.integers(plus.size)]), int(minus[rng.integers(minus.size)])
+
+
+def _auto_t0(a, b, r, half, rng, p0: float = 0.8, samples: int = 200) -> float:
+    """Start temperature so a typical uphill move is accepted with prob ~ p0.
+
+    Samples random candidate swaps (without committing), averages the positive
+    dE, and inverts Metropolis: T0 = mean(dE>0) / -ln(p0)."""
+    ups = []
+    for _ in range(samples):
+        seq = a if rng.random() < 0.5 else b
+        i, j = _pick_swap(seq, rng)
+        d = _dpaf(seq, i, j, half)
+        dE = int(2 * np.dot(r, d) + np.dot(d, d))
+        if dE > 0:
+            ups.append(dE)
+    if not ups:
+        return 3.0
+    return max(1e-6, float(np.mean(ups)) / -np.log(p0))
+
+
 def _accept(dE: int, T: float, strategy: str, rng: np.random.Generator) -> bool:
     if dE < 0:
         return True
@@ -111,11 +172,12 @@ def _one_run(ell, strategy, steps, t0, t_end, rng, reporter=None, r_idx=1):
     half = (ell - 1) // 2
     a = random_sum_one(ell, rng)
     b = random_sum_one(ell, rng)
-    pa = paf_vector(a, half)
-    pb = paf_vector(b, half)
-    E = objective(pa, pb)
+    r = paf_vector(a, half) + paf_vector(b, half) + 2    # residual, carried
+    E = int(np.dot(r, r))
     best_E = E
 
+    if t0 is None:                                       # auto-calibrate T0
+        t0 = _auto_t0(a, b, r, half, rng)
     cool = (t_end / t0) ** (1.0 / max(steps, 1))
     T = t0
     for step in range(steps):
@@ -124,70 +186,55 @@ def _one_run(ell, strategy, steps, t0, t_end, rng, reporter=None, r_idx=1):
         if E == 0:
             return True, a, b, step, 0
 
-        # pick a sequence and a +1/-1 pair to swap
-        seq, pself, pother = (a, pa, pb) if rng.random() < 0.5 else (b, pb, pa)
-        plus = np.flatnonzero(seq == 1)
-        minus = np.flatnonzero(seq == -1)
-        i = plus[rng.integers(plus.size)]
-        j = minus[rng.integers(minus.size)]
-
-        seq[i], seq[j] = -1, 1
-        pnew = paf_vector(seq, half)
-        E_new = objective(pnew, pother)
-        dE = E_new - E
-
+        seq = a if rng.random() < 0.5 else b
+        i, j = _pick_swap(seq, rng)
+        d = _dpaf(seq, i, j, half)
+        dE = int(2 * np.dot(r, d) + np.dot(d, d))
         if _accept(dE, T, strategy, rng):
-            pself[:] = pnew
-            E = E_new
+            seq[i], seq[j] = -1, 1
+            r += d
+            E += dE
             if E < best_E:
                 best_E = E
-        else:
-            seq[i], seq[j] = 1, -1  # revert
         T *= cool
 
     return False, a, b, steps, best_E
 
 
-def _descend(a, b, pa, pb, E, half, rng, patience, budget):
+def _descend(a, b, r, half, rng, patience, budget):
     """Stochastic greedy descent to an (approximate) local minimum.
 
-    Repeatedly try random swaps, accept the improving ones, and declare a local
-    minimum after ``patience`` consecutive rejections. Mutates a, b, pa, pb in
-    place. Returns (E_at_local_min, swap_evaluations_used)."""
+    Accept only strictly-improving swaps; declare a local min after ``patience``
+    consecutive rejections. Mutates a, b, r in place. Returns (E, evals)."""
+    E = int(np.dot(r, r))
     fails = 0
     evals = 0
     while E > 0 and fails < patience and evals < budget:
-        seq, pself, pother = (a, pa, pb) if rng.random() < 0.5 else (b, pb, pa)
-        plus = np.flatnonzero(seq == 1)
-        minus = np.flatnonzero(seq == -1)
-        i = plus[rng.integers(plus.size)]
-        j = minus[rng.integers(minus.size)]
-        seq[i], seq[j] = -1, 1
-        pnew = paf_vector(seq, half)
-        E_new = objective(pnew, pother)
+        seq = a if rng.random() < 0.5 else b
+        i, j = _pick_swap(seq, rng)
+        d = _dpaf(seq, i, j, half)
+        dE = int(2 * np.dot(r, d) + np.dot(d, d))
         evals += 1
-        if E_new < E:
-            pself[:] = pnew
-            E = E_new
+        if dE < 0:
+            seq[i], seq[j] = -1, 1
+            r += d
+            E += dE
             fails = 0
         else:
-            seq[i], seq[j] = 1, -1
             fails += 1
     return E, evals
 
 
-def _apply_kick(a, b, pa, pb, half, k, rng):
-    """Perturb the state with k unconditional random swaps (a barrier-crossing
-    move of size ~k*ell in E). Mutates in place; returns the new E."""
+def _apply_kick(a, b, r, half, k, rng):
+    """Perturb with k unconditional random swaps (a barrier-crossing move of size
+    ~k*ell in E). Mutates a, b, r in place; returns the new E."""
     for _ in range(k):
-        seq, pself = (a, pa) if rng.random() < 0.5 else (b, pb)
-        plus = np.flatnonzero(seq == 1)
-        minus = np.flatnonzero(seq == -1)
-        i = plus[rng.integers(plus.size)]
-        j = minus[rng.integers(minus.size)]
+        seq = a if rng.random() < 0.5 else b
+        i, j = _pick_swap(seq, rng)
+        d = _dpaf(seq, i, j, half)
         seq[i], seq[j] = -1, 1
-        pself[:] = paf_vector(seq, half)
-    return objective(pa, pb)
+        r += d
+    return int(np.dot(r, r))
 
 
 def _basin_hop_run(ell, steps, rng, patience=None, kick=3, reporter=None, r_idx=1):
@@ -195,18 +242,15 @@ def _basin_hop_run(ell, steps, rng, patience=None, kick=3, reporter=None, r_idx=
 
     Descend to a local min; then repeatedly {snapshot, kick by a few swaps,
     re-descend}, accepting the new basin if it is no worse. On a run of
-    rejections the kick strength grows to escape a wide funnel. Reuses structure
-    across basins instead of rerolling the whole configuration."""
+    rejections the kick strength grows to escape a wide funnel."""
     half = (ell - 1) // 2
     if patience is None:
         patience = max(4 * ell, 60)
     a = random_sum_one(ell, rng)
     b = random_sum_one(ell, rng)
-    pa = paf_vector(a, half)
-    pb = paf_vector(b, half)
-    E = objective(pa, pb)
+    r = paf_vector(a, half) + paf_vector(b, half) + 2
     used = 0
-    E, e = _descend(a, b, pa, pb, E, half, rng, patience, steps - used)
+    E, e = _descend(a, b, r, half, rng, patience, steps - used)
     used += e
     if E == 0:
         return True, a, b, used, 0
@@ -216,15 +260,15 @@ def _basin_hop_run(ell, steps, rng, patience=None, kick=3, reporter=None, r_idx=
     while used < steps:
         if reporter is not None:
             reporter.update(r_idx, used, steps, E, best_E)
-        a2, b2, pa2, pb2 = a.copy(), b.copy(), pa.copy(), pb.copy()
-        E2 = _apply_kick(a2, b2, pa2, pb2, half, k, rng)
+        a2, b2, r2 = a.copy(), b.copy(), r.copy()
+        E2 = _apply_kick(a2, b2, r2, half, k, rng)
         used += k
-        E2, e = _descend(a2, b2, pa2, pb2, E2, half, rng, patience, steps - used)
+        E2, e = _descend(a2, b2, r2, half, rng, patience, steps - used)
         used += e
         if E2 == 0:
             return True, a2, b2, used, 0
         if E2 <= E:                       # accept the new basin
-            a, b, pa, pb, E = a2, b2, pa2, pb2, E2
+            a, b, r, E = a2, b2, r2, E2
             best_E = min(best_E, E)
             stale = 0
             k = kick
@@ -246,9 +290,8 @@ def _threshold_run(ell, steps, rng, c=20.0, patience=None, reporter=None, r_idx=
     thresh = c * ell
     a = random_sum_one(ell, rng)
     b = random_sum_one(ell, rng)
-    pa = paf_vector(a, half)
-    pb = paf_vector(b, half)
-    E = objective(pa, pb)
+    r = paf_vector(a, half) + paf_vector(b, half) + 2
+    E = int(np.dot(r, r))
     best_E = E
     used = 0
     fails = 0
@@ -258,31 +301,26 @@ def _threshold_run(ell, steps, rng, c=20.0, patience=None, reporter=None, r_idx=
         if E > thresh or (fails >= patience and E > 0):
             a = random_sum_one(ell, rng)
             b = random_sum_one(ell, rng)
-            pa = paf_vector(a, half)
-            pb = paf_vector(b, half)
-            E = objective(pa, pb)
+            r = paf_vector(a, half) + paf_vector(b, half) + 2
+            E = int(np.dot(r, r))
             used += 1
             fails = 0
             best_E = min(best_E, E)
             continue
-        seq, pself, pother = (a, pa, pb) if rng.random() < 0.5 else (b, pb, pa)
-        plus = np.flatnonzero(seq == 1)
-        minus = np.flatnonzero(seq == -1)
-        i = plus[rng.integers(plus.size)]
-        j = minus[rng.integers(minus.size)]
-        seq[i], seq[j] = -1, 1
-        pnew = paf_vector(seq, half)
-        E_new = objective(pnew, pother)
+        seq = a if rng.random() < 0.5 else b
+        i, j = _pick_swap(seq, rng)
+        d = _dpaf(seq, i, j, half)
+        dE = int(2 * np.dot(r, d) + np.dot(d, d))
         used += 1
-        if E_new < E:
-            pself[:] = pnew
-            E = E_new
+        if dE < 0:
+            seq[i], seq[j] = -1, 1
+            r += d
+            E += dE
             fails = 0
             best_E = min(best_E, E)
             if E == 0:
                 return True, a, b, used, 0
         else:
-            seq[i], seq[j] = 1, -1
             fails += 1
     return False, a, b, used, best_E
 
@@ -292,7 +330,7 @@ def search(
     strategy: str = "anneal",
     restarts: int = 200,
     steps: int = 20000,
-    t0: float = 3.0,
+    t0: float | None = 3.0,
     t_end: float = 0.05,
     seed: int | None = None,
     max_seconds: float | None = None,
@@ -306,7 +344,8 @@ def search(
     best_E, seconds. If ``max_seconds`` is set, stop (unsolved) once that wall
     time is exceeded between restarts. If ``progress`` is set, a one-line
     stderr bar shows the current attempt, step, objective E and best E,
-    refreshed every ``progress_every`` steps.
+    refreshed every ``progress_every`` steps.  Pass ``t0=None`` to auto-calibrate
+    the annealing start temperature per restart.
 
     ``on_restart``, if given, is called ``on_restart(r, overall_best)`` after
     each completed restart -- used by ``parallel_search`` to report progress
@@ -383,6 +422,8 @@ def main() -> int:
     p.add_argument("-n", "--steps", type=int, default=20000, help="steps per restart")
     p.add_argument("--t0", type=float, default=3.0, help="initial temperature (anneal)")
     p.add_argument("--t-end", type=float, default=0.05, help="final temperature (anneal)")
+    p.add_argument("--auto-t0", action="store_true",
+                   help="auto-calibrate the anneal start temperature (ignores --t0)")
     p.add_argument("--seed", type=int, default=0,
                    help="RNG seed for reproducibility (default 0)")
     p.add_argument("-P", "--progress", action="store_true",
@@ -394,8 +435,9 @@ def main() -> int:
     if args.ell <= 0 or args.ell % 2 == 0:
         p.error(f"ell must be a positive odd integer, got {args.ell}")
 
+    t0 = None if args.auto_t0 else args.t0
     res = search(args.ell, args.strategy, args.restarts, args.steps,
-                 args.t0, args.t_end, args.seed,
+                 t0, args.t_end, args.seed,
                  progress=args.progress, progress_every=args.progress_every)
 
     if res["solved"]:
@@ -407,6 +449,7 @@ def main() -> int:
         print(f"  restarts used = {res['restarts_used']}, "
               f"steps in final run = {res['steps_used']}, "
               f"time = {res['seconds']:.3f}s")
+        _save_pair(args, res)
         return 0
 
     print(f"NOT SOLVED ell={args.ell} after {args.restarts} restarts x "
@@ -414,6 +457,24 @@ def main() -> int:
           f"time = {res['seconds']:.3f}s)")
     print("  try: more --restarts/--steps, or --strategy anneal with tuned --t0/--t-end")
     return 1
+
+
+def _save_pair(args, res) -> None:
+    """Persist a solved pair to results/found_pairs.csv (dedup per method+ell)."""
+    try:
+        from pairs_store import record_pair
+    except Exception as exc:                 # pragma: no cover - store is optional
+        print(f"  (note: could not import pairs_store: {exc})")
+        return
+    t0str = "auto" if args.auto_t0 else args.t0
+    params = (f"restarts_used={res['restarts_used']}, steps={args.steps}, "
+              f"seed={args.seed}")
+    if args.strategy == "anneal":
+        params += f", t0={t0str}, t_end={args.t_end}"
+    rec = record_pair(args.ell, args.strategy, res["A"], res["B"],
+                      seconds=res["seconds"], params=params)
+    rel = os.path.relpath(rec["path"])
+    print(f"  {'saved to' if rec['written'] else 'already recorded in'} {rel}")
 
 
 if __name__ == "__main__":

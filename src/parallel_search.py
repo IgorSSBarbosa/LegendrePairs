@@ -207,6 +207,24 @@ def search_parallel(
     }
 
 
+def _save_pair(args, res) -> None:
+    """Persist a solved pair to results/found_pairs.csv (dedup per method+ell)."""
+    try:
+        from pairs_store import record_pair
+    except Exception as exc:                 # pragma: no cover - store is optional
+        print(f"  (note: could not import pairs_store: {exc})")
+        return
+    t0str = "auto" if args.auto_t0 else args.t0
+    params = (f"restarts~{res['restarts_used']}, steps={args.steps}, seed={args.seed}, "
+              f"workers={res['workers']}")
+    if args.strategy == "anneal":
+        params += f", t0={t0str}, t_end={args.t_end}"
+    rec = record_pair(args.ell, args.strategy, res["A"], res["B"],
+                      seconds=res["seconds"], params=params)
+    rel = os.path.relpath(rec["path"])
+    print(f"  {'saved to' if rec['written'] else 'already recorded in'} {rel}")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Parallel local search for a Legendre "
                                 "pair: run the restarts across a process pool.")
@@ -218,6 +236,8 @@ def main() -> int:
     p.add_argument("-n", "--steps", type=int, default=20000, help="steps per restart")
     p.add_argument("--t0", type=float, default=3.0, help="initial temperature (anneal)")
     p.add_argument("--t-end", type=float, default=0.05, help="final temperature (anneal)")
+    p.add_argument("--auto-t0", action="store_true",
+                   help="auto-calibrate the anneal start temperature (ignores --t0)")
     p.add_argument("--seed", type=int, default=0,
                    help="base RNG seed for reproducibility (default 0)")
     p.add_argument("-j", "--jobs", type=int, default=None,
@@ -233,8 +253,9 @@ def main() -> int:
     if args.ell <= 0 or args.ell % 2 == 0:
         p.error(f"ell must be a positive odd integer, got {args.ell}")
 
+    t0 = None if args.auto_t0 else args.t0
     res = search_parallel(args.ell, args.strategy, args.restarts, args.steps,
-                          args.t0, args.t_end, args.seed, workers=args.jobs,
+                          t0, args.t_end, args.seed, workers=args.jobs,
                           tasks_per_worker=args.tasks_per_worker,
                           max_seconds=args.max_seconds, progress=args.progress)
 
@@ -246,6 +267,7 @@ def main() -> int:
         print(f"  A = {_fmt(a)}   {a}")
         print(f"  B = {_fmt(b)}   {b}")
         print(f"  restarts used ~ {res['restarts_used']}, time = {res['seconds']:.3f}s")
+        _save_pair(args, res)
         return 0
 
     print(f"NOT SOLVED ell={args.ell} after ~{res['restarts_used']} restarts x "

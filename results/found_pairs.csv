@@ -1,0 +1,3 @@
+ell,method,A,B,seconds,params,timestamp
+21,anneal,++---++-+---+-+-++-++,----+-+++-++--++++--+,0.2163,"restarts_used=2, steps=12000, seed=0, t0=3.0, t_end=0.05",2026-07-21T01:39:35Z
+25,basinhop,++-++++-----+--+++---+++-,-++----+-++--+-+-+-++-+++,0.4671,"restarts~13, steps=8000, seed=1, workers=4",2026-07-21T01:42:18Z

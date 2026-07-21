@@ -255,6 +255,15 @@ def main() -> int:
               f"[{res['restarts_used']} restart(s)]")
         print(f"  u = {list(map(int, res['u']))}")
         print(f"  v = {list(map(int, res['v']))}")
+        try:
+            from pairs_store import record_pair
+            params = (f"restarts_used={res['restarts_used']}, steps={args.steps}, "
+                      f"seed={args.seed}, t0={'auto' if args.t0 is None else args.t0}")
+            rec = record_pair(args.ell, "anneal", res["u"], res["v"], params=params)
+            print(f"  {'saved to' if rec['written'] else 'already recorded in'} "
+                  f"{os.path.relpath(rec['path'])}")
+        except Exception as exc:              # pragma: no cover - store is optional
+            print(f"  (note: could not record pair: {exc})")
         return 0
     print(f"NOT FOUND ell={args.ell}: {res['reason']}, best_E={res['best_E']}, "
           f"evals={res['evals']}")
