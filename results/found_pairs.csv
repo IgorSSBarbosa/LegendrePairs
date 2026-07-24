@@ -1,3 +1,30 @@
 ell,method,A,B,seconds,params,timestamp
 21,anneal,++---++-+---+-+-++-++,----+-+++-++--++++--+,0.2163,"restarts_used=2, steps=12000, seed=0, t0=3.0, t_end=0.05",2026-07-21T01:39:35Z
+1,basinhop,+,+,0.1728,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:33:54Z
+3,basinhop,++-,+-+,0.1623,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:02Z
+5,basinhop,+--++,-+-++,0.1460,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:08Z
+7,basinhop,+++--+-,+-+++--,0.1829,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:13Z
+9,basinhop,+--++-+-+,+-+---+++,0.1603,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:19Z
+11,basinhop,+--++++--+-,-++-+++-+--,0.1604,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:27Z
+13,basinhop,-+-+--++-+++-,+--+-+---++++,0.1669,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:36Z
+15,basinhop,++--+++--+-+-+-,++-++-----++++-,0.1681,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:48Z
+17,basinhop,+-++++---+-++--+-,+--+---++--+++++-,0.1169,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:34:54Z
+19,basinhop,+++++--+---++--+-+-,+---++-+---+-++-+++,0.1846,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:35:11Z
+21,basinhop,+---+++++-+-+--++--+-,--+----+++--+-++++-++,0.1151,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:35:18Z
+23,basinhop,++-+-+----+++--+--++++-,+-++--++-+-+++++---+---,0.2213,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:35:27Z
 25,basinhop,++-++++-----+--+++---+++-,-++----+-++--+-+-+-++-+++,0.4671,"restarts~13, steps=8000, seed=1, workers=4",2026-07-21T01:42:18Z
+27,basinhop,-+++--+++-++++-+-----+-+--+,-+++-----+++-++--++-+--++-+,0.9787,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:35:43Z
+29,basinhop,--+-++++-+-+++-++-+--+----++-,+---+-+++++---+--+--+++--+++-,1.8723,"restarts~9, steps=20000, seed=0, workers=12",2026-07-21T02:35:53Z
+31,basinhop,--++-----+-++++-++-++++-+---+-+,+-+++--+++--+--+--+++-+-+++----,11.3602,"restarts~117, steps=20000, seed=0, workers=12",2026-07-21T02:36:12Z
+33,basinhop,+++---+++++-++-+--+-+-+++-+------,++--+-+-+++++--+++--+---+--+-++--,36.2257,"restarts~9, steps=200000, seed=0, workers=12",2026-07-21T02:40:03Z
+35,basinhop,-+-+-++--++-++++----+-++++-+-++----,+++-+++++--++--+-+--+--+---+++---+-,233.1478,"restarts~9, steps=600000, seed=0, workers=12",2026-07-21T02:44:19Z
+37,basinhop,-+++-++++---+-++--+-+-+----+++--++--+,--+-++-+++--++-+++-------+-+--+++++-+,52.8256,"restarts~2, steps=1000000, seed=0, workers=12",2026-07-21T03:07:09Z
+5,cpsat,+-++-,+--++,0.0076,"max_seconds=20.0, seed=0, workers=4, symmetry=True",2026-07-21T07:16:05Z
+7,cpsat,+++--+-,+-+++--,0.0087,"max_seconds=20.0, seed=0, workers=4, symmetry=True",2026-07-21T07:16:05Z
+9,cpsat,++-+--+-+,+-++---++,0.0099,"max_seconds=20.0, seed=0, workers=4, symmetry=True",2026-07-21T07:16:06Z
+11,cpsat,++-+++---+-,+-+++---+-+,0.0119,"max_seconds=20.0, seed=0, workers=4, symmetry=True",2026-07-21T07:16:06Z
+13,cpsat,+++-++----++-,+--++++--+-+-,0.0221,"max_seconds=20.0, seed=0, workers=4, symmetry=True",2026-07-21T07:16:06Z
+21,cpsat,+++++---++--+----+++-,++-++-+---+-+++--+-+-,3.0438,"max_seconds=60.0, seed=0, workers=12, symmetry=True",2026-07-21T07:16:24Z
+13,cpsat-lns,+--+++++---+-,-++-+++--+-+-,0.0222,"window=12, iters~2, per_solve=1.0, seed=0, workers=8",2026-07-21T07:22:29Z
+13,cpsat-hybrid,--++-+++-++--,++-+-+++---+-,0.0460,"basin_restarts=8, basin_steps=200000, window=12, iters~0, targeted=True, seed=0, workers=4",2026-07-21T07:33:13Z
+29,cpsat-hybrid,+-+++--+--+-+--++----++-+++-+,--+--++++---+++-+-+-++++-+---,44.1811,"basin_restarts=6, basin_steps=300000, window=14, iters~0, targeted=True, seed=0, workers=8",2026-07-21T07:34:08Z
