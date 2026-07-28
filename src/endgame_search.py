@@ -25,6 +25,7 @@ wider than k swaps).
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -240,6 +241,70 @@ def _incumbent(ell, restarts, steps, seconds, seed):
     return False, a, b, _energy(a, b)
 
 
+def _process_seed(task):
+    """Run one plateau trial (basinhop incumbent -> exact endgame), silently.
+
+    Pure and self-contained so it is safe to run in a ``multiprocessing`` pool:
+    it does no printing and no CSV writes (those happen in the parent, to avoid
+    interleaved logs and concurrent-write corruption).  Returns a plain-dict
+    result classified by ``outcome``:
+      * ``"direct"``  -- basinhop solved outright (distance 0);
+      * ``"cracked"`` -- endgame found a pair within ``max_swaps``;
+      * ``"barrier"`` -- no pair within ``max_swaps`` (the measurement);
+      * ``"skipped"`` -- incumbent E above ``max_e`` (endgame not run).
+    """
+    ell, seed, br, bs, bsec, max_swaps, max_e = task
+    solved, a, b, E = _incumbent(ell, br, bs, bsec, seed)
+    if solved:
+        return {"seed": seed, "outcome": "direct", "incumbent_E": 0,
+                "violation": 0, "distance": 0, "split": None, "seconds": 0.0,
+                "checked": 0, "A": list(a), "B": list(b)}
+    v = _violation(a, b)
+    if max_e is not None and E > max_e:
+        return {"seed": seed, "outcome": "skipped", "incumbent_E": E,
+                "violation": v, "distance": None, "split": None,
+                "seconds": 0.0, "checked": 0, "A": None, "B": None}
+    res = endgame(a, b, max_swaps=max_swaps, verbose=False)
+    return {"seed": seed,
+            "outcome": "cracked" if res["solved"] else "barrier",
+            "incumbent_E": E, "violation": v, "distance": res["distance"],
+            "split": res["split"], "seconds": res["seconds"],
+            "checked": res["checked"], "A": res["A"], "B": res["B"]}
+
+
+def _report(r, ell, max_swaps) -> None:
+    """Print one trial's block and save any pair found (parent process only)."""
+    seed = r["seed"]
+    if r["outcome"] == "skipped":
+        print(f"trial seed {seed}: incumbent E={r['incumbent_E']} "
+              f"violation={r['violation']} -> skipped (E above filter)")
+        return
+    if r["outcome"] == "direct":
+        print(f"trial seed {seed}: basinhop solved directly -> distance 0")
+        print(f"     A = {_fmt(r['A'])}   {r['A']}")
+        print(f"     B = {_fmt(r['B'])}   {r['B']}")
+        _save_pair(ell, "basinhop", r["A"], r["B"], 0.0,
+                   f"seed={seed}, via=endgame-driver")
+        return
+    print(f"trial seed {seed}: incumbent E={r['incumbent_E']} "
+          f"violation={r['violation']}")
+    if r["outcome"] == "cracked":
+        print(f"  -> SOLVED at swap-distance {r['distance']} "
+              f"split={r['split']}  ({r['seconds']:.2f}s, "
+              f"{r['checked']:,} configs)")
+        ok, reason = is_legendre_pair(r["A"], r["B"])
+        print(f"     verified: {ok}{'' if ok else ' -- ' + reason}")
+        print(f"     A = {_fmt(r['A'])}   {r['A']}")
+        print(f"     B = {_fmt(r['B'])}   {r['B']}")
+        _save_pair(ell, "endgame", r["A"], r["B"], r["seconds"],
+                   f"distance={r['distance']}, split={r['split']}, "
+                   f"incumbent_E={r['incumbent_E']}, seed={seed}, "
+                   f"max_swaps={max_swaps}")
+    else:  # barrier
+        print(f"  -> no solution within {max_swaps} swaps "
+              f"({r['checked']:,} configs, {r['seconds']:.2f}s)")
+
+
 def main() -> int:
     # Line-buffer stdout so progress appears live even when redirected to a file
     # (Python block-buffers ~4-8KB to a non-tty otherwise, making logs look
@@ -261,55 +326,54 @@ def main() -> int:
     p.add_argument("--basin-seconds", type=float, default=3.0,
                    help="wall-clock cap for the phase-1 basinhop (default 3s)")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--workers", type=int, default=1,
+                   help="parallel worker processes over trials (default 1)")
+    p.add_argument("--max-incumbent-e", type=float, default=None,
+                   help="only run the endgame when the plateau E is <= this "
+                        "(e.g. 32 to skip poor E=64 basins); default: no filter")
     args = p.parse_args()
 
     if args.ell <= 0 or args.ell % 2 == 0:
         p.error(f"ell must be a positive odd integer, got {args.ell}")
 
-    print(f"[endgame] ell={args.ell}  max_swaps={args.max_swaps}  "
-          f"trials={args.trials}")
-    distances = []
-    for trial in range(args.trials):
-        seed = args.seed + trial
-        solved, a, b, E = _incumbent(args.ell, args.basin_restarts,
-                                     args.basin_steps, args.basin_seconds, seed)
-        if solved:
-            print(f"trial {trial} (seed {seed}): basinhop solved directly "
-                  f"-> distance 0")
-            print(f"     A = {_fmt(a)}   {list(a)}")
-            print(f"     B = {_fmt(b)}   {list(b)}")
-            _save_pair(args.ell, "basinhop", a, b, 0.0,
-                       f"seed={seed}, via=endgame-driver")
-            distances.append(0)
-            continue
-        v = _violation(a, b)
-        print(f"trial {trial} (seed {seed}): incumbent E={E} violation={v}")
-        res = endgame(a, b, max_swaps=args.max_swaps, verbose=True)
-        if res["solved"]:
-            print(f"  -> SOLVED at swap-distance {res['distance']} "
-                  f"split={res['split']}  ({res['seconds']:.2f}s)")
-            ok, reason = is_legendre_pair(res["A"], res["B"])
-            print(f"     verified: {ok}{'' if ok else ' -- ' + reason}")
-            print(f"     A = {_fmt(res['A'])}   {res['A']}")
-            print(f"     B = {_fmt(res['B'])}   {res['B']}")
-            _save_pair(args.ell, "endgame", res["A"], res["B"], res["seconds"],
-                       f"distance={res['distance']}, split={res['split']}, "
-                       f"incumbent_E={E}, seed={seed}, "
-                       f"max_swaps={args.max_swaps}")
-            distances.append(res["distance"])
-        else:
-            print(f"  -> no solution within {args.max_swaps} swaps "
-                  f"({res['checked']:,} configs, {res['seconds']:.2f}s)")
-            distances.append(None)
+    max_e = args.max_incumbent_e
+    workers = max(1, args.workers)
+    seeds = [args.seed + i for i in range(args.trials)]
+    tasks = [(args.ell, s, args.basin_restarts, args.basin_steps,
+              args.basin_seconds, args.max_swaps, max_e) for s in seeds]
 
-    found = [d for d in distances if d is not None]
-    print(f"\nsummary: {len(found)}/{args.trials} incumbents cracked within "
-          f"{args.max_swaps} swaps", end="")
-    if found:
-        print(f"; distances = {distances}")
+    filt = "" if max_e is None else f"  filter=E<={max_e:g}"
+    print(f"[endgame] ell={args.ell}  max_swaps={args.max_swaps}  "
+          f"trials={args.trials}  workers={workers}{filt}")
+
+    results = []
+    if workers == 1:
+        for task in tasks:
+            r = _process_seed(task)
+            _report(r, args.ell, args.max_swaps)
+            results.append(r)
     else:
-        print(f"; the barrier is wider than {args.max_swaps} swaps for all "
-              f"tested incumbents")
+        ctx = mp.get_context("fork")
+        with ctx.Pool(workers) as pool:
+            for r in pool.imap_unordered(_process_seed, tasks):
+                _report(r, args.ell, args.max_swaps)
+                results.append(r)
+
+    direct = [r for r in results if r["outcome"] == "direct"]
+    cracked = [r for r in results if r["outcome"] == "cracked"]
+    barrier = [r for r in results if r["outcome"] == "barrier"]
+    skipped = [r for r in results if r["outcome"] == "skipped"]
+    evaluated = len(cracked) + len(barrier)   # endgame actually ran
+    dists = sorted(r["distance"] for r in cracked)
+    print(f"\nsummary: {len(cracked)}/{evaluated} evaluated incumbents cracked "
+          f"within {args.max_swaps} swaps"
+          f"  |  {len(direct)} solved directly"
+          f"  |  {len(skipped)} skipped (E>filter)")
+    if cracked:
+        print(f"         crack distances = {dists}")
+    elif evaluated:
+        print(f"         barrier is wider than {args.max_swaps} swaps for all "
+              f"{evaluated} evaluated incumbents")
     return 0
 
 
