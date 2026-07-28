@@ -208,6 +208,23 @@ def _hit(a, b, dist, split, t0, checked):
 # --------------------------------------------------------------------------- #
 # driver / CLI
 # --------------------------------------------------------------------------- #
+def _save_pair(ell, method, A, B, seconds, params):
+    """Append a verified pair to results/found_pairs.csv (dedup per method+ell)."""
+    try:
+        from pairs_store import record_pair  # noqa: E402  (sys.path already set)
+    except Exception as exc:                  # pragma: no cover - optional dep
+        print(f"     (note: could not import pairs_store: {exc})")
+        return
+    try:
+        rec = record_pair(ell, method, A, B, seconds=round(seconds, 4),
+                          params=params)
+    except ValueError as exc:                 # not a genuine pair
+        print(f"     (note: not saved -- {exc})")
+        return
+    rel = os.path.relpath(rec["path"])
+    print(f"     {'saved to' if rec['written'] else 'already recorded in'} {rel}")
+
+
 def _incumbent(ell, restarts, steps, seconds, seed):
     """Run basinhop; return (solved, a, b, E) using best config even if unsolved."""
     from local_search import search  # noqa: E402  (sys.path already set)
@@ -248,6 +265,10 @@ def main() -> int:
         if solved:
             print(f"trial {trial} (seed {seed}): basinhop solved directly "
                   f"-> distance 0")
+            print(f"     A = {_fmt(a)}   {list(a)}")
+            print(f"     B = {_fmt(b)}   {list(b)}")
+            _save_pair(args.ell, "basinhop", a, b, 0.0,
+                       f"seed={seed}, via=endgame-driver")
             distances.append(0)
             continue
         v = _violation(a, b)
@@ -258,8 +279,12 @@ def main() -> int:
                   f"split={res['split']}  ({res['seconds']:.2f}s)")
             ok, reason = is_legendre_pair(res["A"], res["B"])
             print(f"     verified: {ok}{'' if ok else ' -- ' + reason}")
-            print(f"     A = {_fmt(res['A'])}")
-            print(f"     B = {_fmt(res['B'])}")
+            print(f"     A = {_fmt(res['A'])}   {res['A']}")
+            print(f"     B = {_fmt(res['B'])}   {res['B']}")
+            _save_pair(args.ell, "endgame", res["A"], res["B"], res["seconds"],
+                       f"distance={res['distance']}, split={res['split']}, "
+                       f"incumbent_E={E}, seed={seed}, "
+                       f"max_swaps={args.max_swaps}")
             distances.append(res["distance"])
         else:
             print(f"  -> no solution within {args.max_swaps} swaps "
