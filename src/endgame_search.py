@@ -238,6 +238,14 @@ def _incumbent(ell, restarts, steps, seconds, seed):
 
 
 def main() -> int:
+    # Line-buffer stdout so progress appears live even when redirected to a file
+    # (Python block-buffers ~4-8KB to a non-tty otherwise, making logs look
+    # empty for a long time).
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:                            # pragma: no cover - old Python
+        pass
+
     p = argparse.ArgumentParser(description="Exact k-swap endgame from a "
                                 "low-objective plateau (radius measurement).")
     p.add_argument("ell", type=int, help="odd length of the pair")
