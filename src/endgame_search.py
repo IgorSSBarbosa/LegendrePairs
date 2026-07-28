@@ -217,12 +217,15 @@ def _save_pair(ell, method, A, B, seconds, params):
         return
     try:
         rec = record_pair(ell, method, A, B, seconds=round(seconds, 4),
-                          params=params)
+                          params=params, dedup="pair")
     except ValueError as exc:                 # not a genuine pair
         print(f"     (note: not saved -- {exc})")
         return
     rel = os.path.relpath(rec["path"])
-    print(f"     {'saved to' if rec['written'] else 'already recorded in'} {rel}")
+    if rec["written"]:
+        print(f"     saved to {rel}")
+    else:
+        print(f"     duplicate pair, already in {rel}")
 
 
 def _incumbent(ell, restarts, steps, seconds, seed):

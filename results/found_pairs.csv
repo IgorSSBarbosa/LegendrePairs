@@ -28,3 +28,7 @@ ell,method,A,B,seconds,params,timestamp
 13,cpsat-lns,+--+++++---+-,-++-+++--+-+-,0.0222,"window=12, iters~2, per_solve=1.0, seed=0, workers=8",2026-07-21T07:22:29Z
 13,cpsat-hybrid,--++-+++-++--,++-+-+++---+-,0.0460,"basin_restarts=8, basin_steps=200000, window=12, iters~0, targeted=True, seed=0, workers=4",2026-07-21T07:33:13Z
 29,cpsat-hybrid,+-+++--+--+-+--++----++-+++-+,--+--++++---+++-+-+-++++-+---,44.1811,"basin_restarts=6, basin_steps=300000, window=14, iters~0, targeted=True, seed=0, workers=8",2026-07-21T07:34:08Z
+29,endgame,-+++--+-+---++-+--+++++-+--+-,+-+---+-+-+++++++---++--+---+,0.9812,"distance=3, split=(2, 1), incumbent_E=32, seed=3, max_swaps=3",2026-07-28T14:34:55Z
+29,endgame,-+--+-+---++---+-++-++--+++++,--++-+-++-----+++-+++-+++-+--,2.4580,"distance=3, split=(1, 2), incumbent_E=32, seed=37, max_swaps=3",2026-07-28T14:56:37Z
+29,basinhop,+++++-+---++---+--+-+-++--+-+,+-++-++---++++--++-----+-+++-,0.0000,"seed=41, via=endgame-driver",2026-07-28T14:57:00Z
+29,basinhop,--++-+--+----+++-++-+++-+-+-+,++---++-+---++-+----+++++++--,0.0000,"seed=44, via=endgame-driver",2026-07-28T14:57:14Z
