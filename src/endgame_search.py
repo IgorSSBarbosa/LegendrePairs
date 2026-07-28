@@ -25,7 +25,6 @@ wider than k swaps).
 from __future__ import annotations
 
 import argparse
-import itertools
 import os
 import sys
 import time
@@ -72,22 +71,68 @@ def _count_mods(nplus, nminus, m):
     return comb(nplus, m) * comb(nminus, m)
 
 
-def _iter_mods(seq, m, half):
-    """Yield ``(paf_tuple, modified_seq)`` for every config exactly ``m`` swaps
-    from ``seq`` (m plus-positions set to -1, m minus-positions set to +1)."""
-    seq = np.asarray(seq, dtype=np.int64)
-    if m == 0:
-        yield _paf_vec(seq, half), seq.copy()
-        return
-    plus = np.where(seq == 1)[0].tolist()
-    minus = np.where(seq == -1)[0].tolist()
-    for pc in itertools.combinations(plus, m):
-        pc = list(pc)
-        for mc in itertools.combinations(minus, m):
-            t = seq.copy()
-            t[pc] = -1
-            t[list(mc)] = 1
-            yield _paf_vec(t, half), t
+def _paf_full(seq, half):
+    """Base PAF vector as a plain Python list (computed once per enumeration)."""
+    ell = len(seq)
+    out = []
+    for s in range(1, half + 1):
+        acc = 0
+        for i in range(ell):
+            acc += seq[i] * seq[(i + s) % ell]
+        out.append(acc)
+    return out
+
+
+def _gen_mods(seq0, m, half):
+    """Yield ``(paf_tuple, live_seq)`` for every config exactly ``m`` swaps from
+    ``seq0`` (m plus-positions set to -1, m minus-positions set to +1).
+
+    The PAF vector is maintained *incrementally*: flipping one position ``p``
+    changes ``PAF(s)`` by ``-2*x_p*(x_{p+s} + x_{p-s})`` using current values, so a
+    DFS that flips one position per edge updates PAF in ``O(half)`` scalar ops --
+    no per-config ``np.dot`` recompute.  ``live_seq`` is a mutable list reused
+    across yields; **copy it** if you keep it past the next iteration.
+    """
+    ell = len(seq0)
+    seq = [int(x) for x in seq0]
+    paf = _paf_full(seq, half)
+    plus = [i for i in range(ell) if seq[i] == 1]
+    minus = [i for i in range(ell) if seq[i] == -1]
+    # neighbour table: nbr[p][s-1] = ((p+s)%ell, (p-s)%ell) -- avoids modulo in
+    # the hot loop.
+    nbr = [[((p + s) % ell, (p - s) % ell) for s in range(1, half + 1)]
+           for p in range(ell)]
+
+    def flip(p):
+        sp = seq[p]
+        t = 2 * sp
+        row = nbr[p]
+        for idx in range(half):
+            i1, i2 = row[idx]
+            paf[idx] -= t * (seq[i1] + seq[i2])
+        seq[p] = -sp
+
+    def rec_minus(k, start):
+        if k == 0:
+            yield tuple(paf), seq
+            return
+        for j in range(start, len(minus) - k + 1):
+            p = minus[j]
+            flip(p)
+            yield from rec_minus(k - 1, j + 1)
+            flip(p)                                  # undo (flip is involutive)
+
+    def rec_plus(k, start):
+        if k == 0:
+            yield from rec_minus(m, 0)
+            return
+        for j in range(start, len(plus) - k + 1):
+            p = plus[j]
+            flip(p)
+            yield from rec_plus(k - 1, j + 1)
+            flip(p)
+
+    yield from rec_plus(m, 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -118,27 +163,32 @@ def endgame(a, b, max_swaps=3, verbose=True):
             cu = _count_mods(napl, namin, mu)
             cv = _count_mods(nbpl, nbmin, mv)
             checked += cu + cv
-            # meet in the middle: hash the smaller side by matching key
+            # meet in the middle: hash the smaller side by matching key, stream
+            # the larger side probing it.  A pair needs PAF_u == -(PAF_v + 2).
             if cu <= cv:
                 umap = {}
-                for pu, ua in _iter_mods(a, mu, half):
-                    umap.setdefault(pu, ua)          # PAF_u vector -> config
-                for pv, vb in _iter_mods(b, mv, half):
+                for pu, ua in _gen_mods(a, mu, half):
+                    if pu not in umap:
+                        umap[pu] = list(ua)          # copy: PAF_u vector -> config
+                for pv, vb in _gen_mods(b, mv, half):
                     target = tuple(-(x + 2) for x in pv)   # need PAF_u == target
                     hit = umap.get(target)
                     if hit is not None:
-                        ok, _ = is_legendre_pair(hit.tolist(), vb.tolist())
+                        vb = list(vb)
+                        ok, _ = is_legendre_pair(hit, vb)
                         if ok:
                             return _hit(hit, vb, t, (mu, mv), t0, checked)
             else:
                 vmap = {}
-                for pv, vb in _iter_mods(b, mv, half):
+                for pv, vb in _gen_mods(b, mv, half):
                     key = tuple(-(x + 2) for x in pv)      # target PAF_u
-                    vmap.setdefault(key, vb)
-                for pu, ua in _iter_mods(a, mu, half):
+                    if key not in vmap:
+                        vmap[key] = list(vb)
+                for pu, ua in _gen_mods(a, mu, half):
                     hit = vmap.get(pu)                     # PAF_u matches target?
                     if hit is not None:
-                        ok, _ = is_legendre_pair(ua.tolist(), hit.tolist())
+                        ua = list(ua)
+                        ok, _ = is_legendre_pair(ua, hit)
                         if ok:
                             return _hit(ua, hit, t, (mu, mv), t0, checked)
         if verbose:
@@ -150,7 +200,7 @@ def endgame(a, b, max_swaps=3, verbose=True):
 
 
 def _hit(a, b, dist, split, t0, checked):
-    return {"solved": True, "A": a.tolist(), "B": b.tolist(), "distance": dist,
+    return {"solved": True, "A": list(a), "B": list(b), "distance": dist,
             "split": split, "seconds": time.perf_counter() - t0,
             "checked": checked}
 
