@@ -358,6 +358,8 @@ def search(
     reporter = _Reporter(progress, progress_every, restarts)
     t_start = time.perf_counter()
     overall_best = None
+    best_a = None
+    best_b = None
     for r in range(1, restarts + 1):
         if strategy == "basinhop":
             solved, a, b, used, best_E = _basin_hop_run(ell, steps, rng,
@@ -370,6 +372,8 @@ def search(
                                                   rng, reporter=reporter, r_idx=r)
         if overall_best is None or best_E < overall_best:
             overall_best = best_E
+            best_a = a.tolist()
+            best_b = b.tolist()
         reporter.note_best(best_E)
         if on_restart is not None:
             on_restart(r, overall_best)
@@ -379,6 +383,8 @@ def search(
                 "solved": True,
                 "A": a.tolist(),
                 "B": b.tolist(),
+                "best_A": a.tolist(),
+                "best_B": b.tolist(),
                 "restarts_used": r,
                 "steps_used": used,
                 "best_E": 0,
@@ -390,6 +396,8 @@ def search(
                 "solved": False,
                 "A": None,
                 "B": None,
+                "best_A": best_a,
+                "best_B": best_b,
                 "restarts_used": r,
                 "steps_used": steps,
                 "best_E": overall_best,
@@ -400,6 +408,8 @@ def search(
         "solved": False,
         "A": None,
         "B": None,
+        "best_A": best_a,
+        "best_B": best_b,
         "restarts_used": restarts,
         "steps_used": steps,
         "best_E": overall_best,
