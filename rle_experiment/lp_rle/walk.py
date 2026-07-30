@@ -92,6 +92,16 @@ class MoveSet:
     def propose(self, v: np.ndarray, rng: np.random.Generator) -> Optional[Move]:
         raise NotImplementedError
 
+    # Basin-hopping splits proposals into a local (descent) flavor and a kick
+    # (perturbation) flavor. By default both are just `propose`; the RLE set
+    # overrides them to micro (local) vs macro (kick). The binary baseline uses
+    # its single 2-flip for both, which is exactly standard binary basin-hopping.
+    def propose_local(self, v: np.ndarray, rng: np.random.Generator) -> Optional[Move]:
+        return self.propose(v, rng)
+
+    def propose_kick(self, v: np.ndarray, rng: np.random.Generator) -> Optional[Move]:
+        return self.propose(v, rng)
+
 
 class BinaryMoveSet(MoveSet):
     """Baseline: uniform pm1 2-flip (swap a random +1 with a random -1)."""
@@ -130,6 +140,19 @@ class RLEMoveSet(MoveSet):
         if kind == 1:
             return self._swap(v, rng)
         if kind == 2:
+            return self._band(v, rng)
+        return self._split_merge(v, rng)
+
+    def propose_local(self, v, rng):
+        """Basin-hopping descent flavor: the micro (boundary 2-flip) move only."""
+        return self._micro(v, rng)
+
+    def propose_kick(self, v, rng):
+        """Basin-hopping kick flavor: a macro (swap / band / split-merge) move."""
+        kind = rng.integers(3)
+        if kind == 0:
+            return self._swap(v, rng)
+        if kind == 1:
             return self._band(v, rng)
         return self._split_merge(v, rng)
 
@@ -446,3 +469,148 @@ class TwoStageSearch:
         if T <= 1e-12:
             return False
         return self.rng.random() < math.exp(-df / T)
+
+
+# --------------------------------------------------------------------------- #
+# basin-hopping
+# --------------------------------------------------------------------------- #
+class BasinHopper:
+    """Basin-hopping over the joint (u, v) state, f = sum_s e[s]^2.
+
+    Each outer *hop*:
+      1. take a local minimum x (greedy descent with ``propose_local`` moves),
+      2. perturb it with ``n_kick`` ``propose_kick`` moves (accepted blindly),
+      3. descend again to a new local minimum x',
+      4. Metropolis-accept x' over x on the local-minimum objective.
+
+    For RLEMoveSet: descent = micro boundary 2-flips, kick = macro run moves —
+    the run-length hypothesis. For BinaryMoveSet: descent and kick are both the
+    uniform 2-flip, i.e. standard binary basin-hopping (the control). All
+    objective bookkeeping goes through the exact integer delta kernels.
+
+    Stats convention here: micro_* count descent proposals/accepts; macro_*
+    count OUTER HOPS proposed/accepted (df_macro_sum = sum of basin-to-basin
+    Delta f), so macro_acc_rate is the hop acceptance rate.
+    """
+
+    def __init__(self, L: int, moves: MoveSet, meta: Meta, rng: np.random.Generator,
+                 n_kick: int = 3, descent_patience: Optional[int] = None):
+        check_odd(L)
+        self.L = L
+        self.h = half_len(L)
+        self.moves = moves
+        self.meta = meta
+        self.rng = rng
+        self.n_kick = n_kick
+        self.descent_patience = descent_patience if descent_patience is not None else 4 * L
+        self._reset()
+
+    def _reset(self):
+        self.u = random_seq(self.L, self.rng)
+        self.v = random_seq(self.L, self.rng)
+        self.pu = paf_naive(self.u)
+        self.pv = paf_naive(self.v)
+        self.e = self.pu + self.pv + 2
+        self.f = int(np.dot(self.e, self.e))
+
+    def _commit(self, side, mv, dpaf, df):
+        if side == "u":
+            self.u = mv.v_new
+            self.pu = self.pu + dpaf
+        else:
+            self.v = mv.v_new
+            self.pv = self.pv + dpaf
+        self.e = self.e + dpaf
+        self.f += df
+
+    def _snapshot(self):
+        return (self.u.copy(), self.v.copy(), self.pu.copy(), self.pv.copy(),
+                self.e.copy(), self.f)
+
+    def _restore(self, snap):
+        self.u, self.v, self.pu, self.pv, self.e, self.f = (
+            snap[0], snap[1], snap[2], snap[3], snap[4], snap[5])
+
+    def _propose(self, kind: str):
+        side = "u" if self.rng.random() < 0.5 else "v"
+        v_cur = self.u if side == "u" else self.v
+        mv = (self.moves.propose_local(v_cur, self.rng) if kind == "local"
+              else self.moves.propose_kick(v_cur, self.rng))
+        if mv is None:
+            return None
+        dpaf = delta_paf_general(v_cur, mv.J, mv.delta, self.L)
+        df = int(delta_f(self.e, dpaf))
+        return side, mv, dpaf, df
+
+    def _descend(self, st: "Stats"):
+        """First-improvement greedy descent with local moves to a local min."""
+        stall = 0
+        while stall < self.descent_patience:
+            st.steps += 1
+            p = self._propose("local")
+            if p is None:
+                stall += 1
+                continue
+            side, mv, dpaf, df = p
+            st.micro_prop += 1
+            st.df_micro_sum += df
+            if df < 0:
+                self._commit(side, mv, dpaf, df)
+                st.micro_acc += 1
+                st.accepts += 1
+                stall = 0
+            else:
+                stall += 1
+        return self.f
+
+    def run(self, max_steps: int, time_budget: Optional[float] = None) -> "Stats":
+        import time
+
+        st = Stats()
+        t0 = time.perf_counter()
+        T = self.meta.T0
+
+        f_local = self._descend(st)
+        st.best_f = min(st.best_f, self.f)
+        if self.f == 0:
+            st.found = True
+            st.time_to_first = time.perf_counter() - t0
+            return st
+
+        while st.steps < max_steps:
+            snap = self._snapshot()
+            # kick out of the current basin (blind acceptance)
+            for _ in range(self.n_kick):
+                st.steps += 1
+                p = self._propose("kick")
+                if p is None:
+                    continue
+                side, mv, dpaf, df = p
+                self._commit(side, mv, dpaf, df)
+            # re-descend
+            self._descend(st)
+            f_new = self.f
+            # Metropolis on local minima
+            st.macro_prop += 1
+            st.df_macro_sum += f_new - f_local
+            accept = (f_new <= f_local) or (
+                T > 1e-12 and self.rng.random() < math.exp(-(f_new - f_local) / T))
+            if accept:
+                st.macro_acc += 1
+                f_local = f_new
+            else:
+                self._restore(snap)
+            st.best_f = min(st.best_f, self.f)
+            T *= self.meta.cooling
+            if self.f == 0:
+                st.found = True
+                st.time_to_first = time.perf_counter() - t0
+                break
+            if time_budget is not None and (time.perf_counter() - t0) > time_budget:
+                break
+
+        st.best_f = min(st.best_f, self.f)
+        return st
+
+    def solution(self):
+        return (self.u.copy(), self.v.copy()) if self.f == 0 else None
