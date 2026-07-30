@@ -136,6 +136,61 @@ def bench_two_stage(representation, L, seeds, max_steps, meta, base_seed) -> Dic
                              "classes_per_s": len(classes) / wall if wall else 0.0})
 
 
+def bench_basinhop(representation, L, seeds, max_steps, meta, base_seed, n_kick=3) -> Dict:
+    from lp_rle.walk import BasinHopper
+    from lp_rle.baseline import make_moveset
+    stats_list = []
+    found_classes = set()
+    t0 = time.perf_counter()
+    for s in range(seeds):
+        rng = np.random.default_rng(base_seed + s)
+        w = BasinHopper(L, make_moveset(representation), meta, rng, n_kick=n_kick)
+        st = w.run(max_steps)
+        stats_list.append(st)
+        sol = w.solution()
+        if sol is not None:
+            found_classes.add(canonical_pair(*sol))
+    wall = time.perf_counter() - t0
+    return _agg(stats_list, {"classes_found": len(found_classes),
+                             "wall_s": wall,
+                             "classes_per_s": len(found_classes) / wall if wall else 0.0})
+
+
+def head_to_head_solvers(Ls, seeds=50, max_steps=20000, base_seed=1234,
+                         meta=None, n_kick=3) -> List[Dict]:
+    """The {sa, basinhop} x {rle, binary} grid on equal step budgets.
+
+    sa       -> JointWalker Metropolis (bench_joint)
+    basinhop -> BasinHopper descent/kick/Metropolis (bench_basinhop)
+
+    Reuses the head_to_head CSV schema: the solver name goes in the
+    ``formulation`` column so write_csv / plot_headline work unchanged.
+    """
+    meta = meta or Meta(kind="sa", T0=6.0, cooling=0.9997)
+    rows = []
+    for L in Ls:
+        gt = run_exhaustive(L)
+        total = gt["lp_classes"]
+        for solver in ("sa", "basinhop"):
+            for representation in ("rle", "binary"):
+                if solver == "sa":
+                    r = bench_joint(representation, L, seeds, max_steps, meta, base_seed)
+                else:
+                    r = bench_basinhop(representation, L, seeds, max_steps, meta,
+                                       base_seed, n_kick)
+                r.update({"L": L, "formulation": solver,
+                          "representation": representation,
+                          "total_classes": total,
+                          "recovered_frac": r["classes_found"] / total if total else 0.0})
+                rows.append(r)
+                print(f"L={L:>2} {solver:>9}/{representation:<6} "
+                      f"succ={r['success_frac']:.2f} "
+                      f"classes={r['classes_found']}/{total} "
+                      f"cls/s={r['classes_per_s']:.3f} "
+                      f"macroAcc={r['macro_acc_rate']:.3f}")
+    return rows
+
+
 def head_to_head(Ls, seeds=50, max_steps=20000, base_seed=1234, meta=None) -> List[Dict]:
     meta = meta or Meta(kind="sa", T0=6.0, cooling=0.9997)
     rows = []
@@ -203,12 +258,23 @@ def plot_headline(rows: List[Dict], path: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--paf", action="store_true", help="only the PAF crossover")
+    ap.add_argument("--solvers", action="store_true",
+                    help="run the {sa,basinhop}x{rle,binary} grid instead of {joint,two-stage}")
     ap.add_argument("--seeds", type=int, default=30)
     ap.add_argument("--steps", type=int, default=8000)
+    ap.add_argument("--n-kick", type=int, default=3, help="macro kicks per hop (basinhop)")
     ap.add_argument("--Ls", type=int, nargs="*", default=[13, 15, 17, 19])
     args = ap.parse_args()
 
     os.makedirs(RESULTS, exist_ok=True)
+
+    if args.solvers:
+        print("\n== head-to-head: {sa,basinhop} x {rle,binary} ==")
+        rows = head_to_head_solvers(args.Ls, seeds=args.seeds, max_steps=args.steps,
+                                    n_kick=args.n_kick)
+        write_csv(rows, os.path.join(RESULTS, "head_to_head_solvers.csv"))
+        plot_headline(rows, os.path.join(RESULTS, "headline_recovery_solvers.png"))
+        return
 
     paf_rows = crossover_paf([13, 15, 17, 19, 21, 23, 25])
     print("\n== PAF crossover ==")
