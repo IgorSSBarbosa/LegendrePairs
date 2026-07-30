@@ -55,10 +55,18 @@ def main(argv=None):
     ap.add_argument("--T0", type=float, default=4.0)
     ap.add_argument("--cooling", type=float, default=0.9995)
     ap.add_argument("--n-kick", type=int, default=3, help="macro kicks per hop (basinhop)")
+    ap.add_argument("--energy-reg", type=float, default=0.0,
+                    help="energy-regularizer weight lambda0 (0 = off)")
+    ap.add_argument("--reg-mode", choices=["low", "equal", "both"], default="low",
+                    help="regularizer flavor: low energy / equal energy / both")
+    ap.add_argument("--reg-cooling", type=float, default=0.999,
+                    help="per-step geometric decay of lambda toward 0")
     ap.add_argument("--quiet", action="store_true", help="only print the summary line")
     args = ap.parse_args(argv)
 
-    meta = Meta(kind="sa", T0=args.T0, cooling=args.cooling)
+    meta = Meta(kind="sa", T0=args.T0, cooling=args.cooling,
+                energy_reg=args.energy_reg, reg_mode=args.reg_mode,
+                reg_cooling=args.reg_cooling)
     n_found = 0
     ttfs = []
     t0 = time.perf_counter()

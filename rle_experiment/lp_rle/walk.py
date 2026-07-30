@@ -251,6 +251,15 @@ class Meta:
     cooling: float = 0.9995
     tabu_tenure: int = 20
     plateau_restart: int = 2000  # steps without improvement before restart
+    # energy regularizer (opt-in; energy_reg=0.0 => exact original behavior).
+    # Adds lambda * R to the objective, R biasing toward low PAF energy and/or
+    # equal energy between u and v, with lambda annealed geometrically to 0.
+    #   'low'   -> R = E(u) + E(v)         (E is the half-energy <PAF,PAF>)
+    #   'equal' -> R = (E(u) - E(v))^2     (automatic at any LP; a soft guide)
+    #   'both'  -> sum of the two
+    energy_reg: float = 0.0
+    reg_mode: str = "low"      # 'low' | 'equal' | 'both'
+    reg_cooling: float = 0.999  # per-step geometric decay of lambda toward 0
 
 
 # --------------------------------------------------------------------------- #
@@ -301,6 +310,21 @@ class JointWalker:
         self.pv = paf_naive(self.v)
         self.e = self.pu + self.pv + 2
         self.f = int(np.dot(self.e, self.e))
+        # half-energies E(x) = <PAF_x, PAF_x> (full PAF energy is 2x this),
+        # tracked incrementally when the energy regularizer is active.
+        self.Eu = int(np.dot(self.pu, self.pu))
+        self.Ev = int(np.dot(self.pv, self.pv))
+
+    def _reg_delta(self, side: str, dE: int) -> int:
+        """Change in the regularizer term R for a move that shifts E(side) by dE."""
+        mode = self.meta.reg_mode
+        if mode == "low":
+            return dE
+        diff = self.Eu - self.Ev
+        eq = (2 * diff * dE + dE * dE) if side == "u" else (-2 * diff * dE + dE * dE)
+        if mode == "equal":
+            return eq
+        return dE + eq  # 'both'
 
     def run(self, max_steps: int, time_budget: Optional[float] = None) -> Stats:
         import time
@@ -308,6 +332,8 @@ class JointWalker:
         st = Stats()
         t0 = time.perf_counter()
         T = self.meta.T0
+        lam = float(self.meta.energy_reg)
+        use_reg = lam != 0.0
         tabu = deque(maxlen=self.meta.tabu_tenure)
         last_improve = 0
         for step in range(max_steps):
@@ -323,6 +349,14 @@ class JointWalker:
             df = int(delta_f(self.e, dpaf))
             desc = (side,) + mv.descriptor
 
+            # regularized objective delta dg = df + lambda * dR (dg == df when off)
+            if use_reg:
+                dE = 2 * int(np.dot(paf_cur, dpaf)) + int(np.dot(dpaf, dpaf))
+                dg = df + lam * self._reg_delta(side, dE)
+            else:
+                dE = 0
+                dg = df
+
             if mv.macro:
                 st.macro_prop += 1
                 st.df_macro_sum += df
@@ -332,15 +366,19 @@ class JointWalker:
 
             if self.meta.kind == "tabu" and desc in tabu and (self.f + df) >= st.best_f:
                 continue
-            accept = self._accept(df, T)
+            accept = self._accept(dg, T)
             if accept:
                 # commit
                 if side == "u":
                     self.u = mv.v_new
                     self.pu = paf_cur + dpaf
+                    if use_reg:
+                        self.Eu += dE
                 else:
                     self.v = mv.v_new
                     self.pv = paf_cur + dpaf
+                    if use_reg:
+                        self.Ev += dE
                 self.e = self.e + dpaf
                 self.f += df
                 st.accepts += 1
@@ -363,6 +401,8 @@ class JointWalker:
             # cooling / restart
             if self.meta.kind == "sa" or self.meta.kind == "tabu":
                 T *= self.meta.cooling
+            if use_reg:
+                lam *= self.meta.reg_cooling
             if self.meta.kind == "restart" and step - last_improve > self.meta.plateau_restart:
                 self._reset()
                 last_improve = step
@@ -512,50 +552,78 @@ class BasinHopper:
         self.pv = paf_naive(self.v)
         self.e = self.pu + self.pv + 2
         self.f = int(np.dot(self.e, self.e))
+        self.Eu = int(np.dot(self.pu, self.pu))
+        self.Ev = int(np.dot(self.pv, self.pv))
 
-    def _commit(self, side, mv, dpaf, df):
+    def _reg_delta(self, side: str, dE: int) -> int:
+        """Change in the regularizer term R for a move that shifts E(side) by dE."""
+        mode = self.meta.reg_mode
+        if mode == "low":
+            return dE
+        diff = self.Eu - self.Ev
+        eq = (2 * diff * dE + dE * dE) if side == "u" else (-2 * diff * dE + dE * dE)
+        if mode == "equal":
+            return eq
+        return dE + eq  # 'both'
+
+    def _reg_value(self) -> int:
+        """Absolute regularizer R at the current state (from tracked half-energies)."""
+        mode = self.meta.reg_mode
+        if mode == "low":
+            return self.Eu + self.Ev
+        d = self.Eu - self.Ev
+        if mode == "equal":
+            return d * d
+        return self.Eu + self.Ev + d * d  # 'both'
+
+    def _commit(self, side, mv, dpaf, df, dE=0):
         if side == "u":
             self.u = mv.v_new
             self.pu = self.pu + dpaf
+            self.Eu += dE
         else:
             self.v = mv.v_new
             self.pv = self.pv + dpaf
+            self.Ev += dE
         self.e = self.e + dpaf
         self.f += df
 
     def _snapshot(self):
         return (self.u.copy(), self.v.copy(), self.pu.copy(), self.pv.copy(),
-                self.e.copy(), self.f)
+                self.e.copy(), self.f, self.Eu, self.Ev)
 
     def _restore(self, snap):
-        self.u, self.v, self.pu, self.pv, self.e, self.f = (
-            snap[0], snap[1], snap[2], snap[3], snap[4], snap[5])
+        (self.u, self.v, self.pu, self.pv, self.e, self.f,
+         self.Eu, self.Ev) = snap
 
-    def _propose(self, kind: str):
+    def _propose(self, kind: str, use_reg: bool):
         side = "u" if self.rng.random() < 0.5 else "v"
         v_cur = self.u if side == "u" else self.v
+        paf_cur = self.pu if side == "u" else self.pv
         mv = (self.moves.propose_local(v_cur, self.rng) if kind == "local"
               else self.moves.propose_kick(v_cur, self.rng))
         if mv is None:
             return None
         dpaf = delta_paf_general(v_cur, mv.J, mv.delta, self.L)
         df = int(delta_f(self.e, dpaf))
-        return side, mv, dpaf, df
+        dE = (2 * int(np.dot(paf_cur, dpaf)) + int(np.dot(dpaf, dpaf))) if use_reg else 0
+        return side, mv, dpaf, df, dE
 
-    def _descend(self, st: "Stats"):
-        """First-improvement greedy descent with local moves to a local min."""
+    def _descend(self, st: "Stats", lam: float, use_reg: bool):
+        """First-improvement greedy descent on g = f + lam*R to a local min."""
         stall = 0
         while stall < self.descent_patience:
             st.steps += 1
-            p = self._propose("local")
+            p = self._propose("local", use_reg)
             if p is None:
                 stall += 1
                 continue
-            side, mv, dpaf, df = p
+            side, mv, dpaf, df, dE = p
             st.micro_prop += 1
             st.df_micro_sum += df
-            if df < 0:
-                self._commit(side, mv, dpaf, df)
+            dg = df + lam * self._reg_delta(side, dE) if use_reg else df
+            if dg < 0:
+                self._commit(side, mv, dpaf, df, dE)
                 st.micro_acc += 1
                 st.accepts += 1
                 stall = 0
@@ -569,8 +637,11 @@ class BasinHopper:
         st = Stats()
         t0 = time.perf_counter()
         T = self.meta.T0
+        lam = float(self.meta.energy_reg)
+        use_reg = lam != 0.0
 
-        f_local = self._descend(st)
+        f_local = self._descend(st, lam, use_reg)
+        r_local = self._reg_value() if use_reg else 0
         st.best_f = min(st.best_f, self.f)
         if self.f == 0:
             st.found = True
@@ -578,30 +649,37 @@ class BasinHopper:
             return st
 
         while st.steps < max_steps:
+            # regularized objective of the incumbent minimum at the CURRENT lambda
+            g_local = f_local + lam * r_local
             snap = self._snapshot()
             # kick out of the current basin (blind acceptance)
             for _ in range(self.n_kick):
                 st.steps += 1
-                p = self._propose("kick")
+                p = self._propose("kick", use_reg)
                 if p is None:
                     continue
-                side, mv, dpaf, df = p
-                self._commit(side, mv, dpaf, df)
+                side, mv, dpaf, df, dE = p
+                self._commit(side, mv, dpaf, df, dE)
             # re-descend
-            self._descend(st)
+            self._descend(st, lam, use_reg)
             f_new = self.f
-            # Metropolis on local minima
+            r_new = self._reg_value() if use_reg else 0
+            g_new = f_new + lam * r_new
+            # Metropolis on local minima, judged on the regularized objective
             st.macro_prop += 1
             st.df_macro_sum += f_new - f_local
-            accept = (f_new <= f_local) or (
-                T > 1e-12 and self.rng.random() < math.exp(-(f_new - f_local) / T))
+            accept = (g_new <= g_local) or (
+                T > 1e-12 and self.rng.random() < math.exp(-(g_new - g_local) / T))
             if accept:
                 st.macro_acc += 1
                 f_local = f_new
+                r_local = r_new
             else:
                 self._restore(snap)
             st.best_f = min(st.best_f, self.f)
             T *= self.meta.cooling
+            if use_reg:
+                lam *= self.meta.reg_cooling
             if self.f == 0:
                 st.found = True
                 st.time_to_first = time.perf_counter() - t0

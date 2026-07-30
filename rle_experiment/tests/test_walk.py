@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from lp_rle.conventions import P_of
 from lp_rle.paf import paf_naive
@@ -34,6 +35,48 @@ def test_joint_residual_stays_exact():
         assert w.f == int(np.dot(e_check, e_check))
         if w.f == 0:
             break
+
+
+@pytest.mark.parametrize("mode", ["low", "equal", "both"])
+def test_energy_reg_bookkeeping_and_off_path(mode):
+    # with the energy regularizer active, the incrementally-tracked half-energies
+    # E(u)=<pu,pu>, E(v)=<pv,pv> must match a from-scratch recompute, and f must
+    # still equal <e,e> (the regularizer must not corrupt the true objective).
+    rng = np.random.default_rng(3)
+    meta = Meta(kind="sa", T0=5.0, energy_reg=0.05, reg_mode=mode, reg_cooling=0.999)
+    w = JointWalker(15, RLEMoveSet(), meta, rng)
+    w.run(4000)
+    assert w.Eu == int(np.dot(w.pu, w.pu))
+    assert w.Ev == int(np.dot(w.pv, w.pv))
+    assert w.f == int(np.dot(w.e, w.e))
+    assert np.array_equal(w.e, paf_naive(w.u) + paf_naive(w.v) + 2)
+
+
+def test_energy_reg_off_is_identical_to_baseline():
+    # energy_reg=0.0 (default) must reproduce the un-regularized walk bit-for-bit:
+    # same RNG + same moves => identical final (u, v, f).
+    def run(meta):
+        return JointWalker(15, RLEMoveSet(), meta, np.random.default_rng(9)).run(2000)
+    base = JointWalker(15, RLEMoveSet(), Meta(kind="sa"), np.random.default_rng(9))
+    base.run(2000)
+    off = JointWalker(15, RLEMoveSet(), Meta(kind="sa", energy_reg=0.0),
+                      np.random.default_rng(9))
+    off.run(2000)
+    assert np.array_equal(base.u, off.u) and np.array_equal(base.v, off.v)
+    assert base.f == off.f
+
+
+def test_energy_reg_still_finds_lp():
+    # the regularized walk must still solve L=13 within budget over a few seeds.
+    for seed in range(20):
+        meta = Meta(kind="sa", T0=6.0, cooling=0.9997,
+                    energy_reg=0.1, reg_mode="low", reg_cooling=0.999)
+        w = JointWalker(13, RLEMoveSet(), meta, np.random.default_rng(seed))
+        if w.run(30000).found:
+            u, v = w.solution()
+            assert np.all(paf_naive(u) + paf_naive(v) == -2)
+            return
+    assert False, "energy-regularized SA found no LP at L=13"
 
 
 def test_joint_finds_lp_small_L():
