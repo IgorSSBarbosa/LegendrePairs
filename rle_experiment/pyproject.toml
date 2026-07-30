@@ -1,0 +1,33 @@
+[project]
+name = "lp_rle"
+version = "0.1.0"
+description = "Legendre Pair search via a run-length (RLE) reparametrization — a measurement apparatus for whether the RLE helps"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "numba>=0.58",
+    "matplotlib>=3.5",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+# NOTE: Poetry is intentionally NOT used here (see README §Packaging). The
+# repository convention is plain `python3` with no build/install step. This
+# pyproject.toml declares dependencies (PEP 621) for documentation and for
+# anyone who wants `pip install -e .`, but the package is fully runnable as-is:
+#   python3 -m pytest rle_experiment/tests
+#   python3 rle_experiment/lp_rle/bench.py
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["lp_rle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: brute-force validation for L in {21,23,25} (opt in with -m slow)",
+]

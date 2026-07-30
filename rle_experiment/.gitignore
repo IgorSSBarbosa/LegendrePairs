@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Regenerable benchmark smoke artifacts (not versioned; rerun via lp_rle/bench.py).
+# The computed LP ground-truth tables under results/lps/ ARE versioned.
+results/head_to_head.csv
+results/paf_crossover.csv
+results/headline_recovery.png
