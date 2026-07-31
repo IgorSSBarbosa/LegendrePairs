@@ -6,3 +6,4 @@ __pycache__/
 results/endgame_*.log
 rle_experiment/results/*.log
 TODO.local.md
+compression_experiment/results/*.log
