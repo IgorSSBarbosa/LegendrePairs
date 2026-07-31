@@ -1,5 +1,8 @@
+gitignore
 __pycache__/
 *.pyc
 *.pyo
 .DS_Store
 results/endgame_*.log
+rle_experiment/results/*.log
+TODO.local.md
