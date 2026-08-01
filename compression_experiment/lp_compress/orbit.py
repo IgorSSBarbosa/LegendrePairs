@@ -125,6 +125,73 @@ def orbit_reduced_pairs(pairs: Iterable[Tuple[np.ndarray, np.ndarray]], m: int,
     return list(reps.values())
 
 
+# --------------------------------------------------------------------------- #
+# VECTORIZED orbit reduction (default group only, no multipliers)
+# --------------------------------------------------------------------------- #
+# Correctness identity with the byte-key path above:
+#   compressed entries live in ``{-n,-n+2,...,n}``, so mapping ``x -> x % (2n+1)``
+#   yields a digit in ``0..2n`` whose ORDER equals the ``int8.tobytes()`` unsigned
+#   order (``0<1<...<n<-n<...<-1``).  Encoding a length-``m`` row as the base-
+#   ``(2n+1)`` integer with entry 0 most-significant therefore reproduces exactly
+#   the lexicographic ``tobytes()`` comparison ``canonical_c`` minimizes over.  We
+#   minimize over the same ``4m`` group elements (all rotations of ``{v,-v}`` and
+#   of the plain reversal ``v[::-1]`` and its negation — the reversal's rotations
+#   sweep the same coset ``reverse_c`` does), so the picked representative is
+#   byte-for-byte the one the serial path picks.  A combined key ``lo*B+hi`` with
+#   ``B=(2n+1)**m`` reproduces ``sorted((kA,kB))`` swap-folding in one int64.
+
+
+def _vec_key_fits(m: int, n: int) -> bool:
+    """True iff the base-``(2n+1)`` combined pair key fits a signed int64."""
+    return (2 * n + 1) ** (2 * m) < 2 ** 63
+
+
+def _canonical_keys_batch(C: np.ndarray, m: int, n: int) -> np.ndarray:
+    """Per-row group-min integer key (min over all ``4m`` induced generators).
+
+    ``C`` is ``(N, m)`` integer; returns ``(N,)`` int64 canonical keys matching the
+    lexicographic ``canonical_c`` byte-minimum of each row (see identity note above).
+    """
+    base = 2 * n + 1
+    powers = (base ** np.arange(m - 1, -1, -1)).astype(np.int64)  # entry 0 = MSB
+    ii = np.arange(m)[:, None]
+    tt = np.arange(m)[None, :]
+    pmat = powers[(ii + tt) % m]                    # pmat[j,t] = base**(m-1-((j-t)%m))
+    best: Optional[np.ndarray] = None
+    for W in (C, -C, C[:, ::-1], -C[:, ::-1]):      # {v,-v} x {id, reversal}
+        keys = (W % base).astype(np.int64) @ pmat   # (N,m): all rotations at once
+        row = keys.min(axis=1)
+        best = row if best is None else np.minimum(best, row)
+    return best
+
+
+def orbit_reduced_pairs_vec(pairs, m: int, n: int
+                            ) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Vectorized equivalent of :func:`orbit_reduced_pairs` (multipliers OFF).
+
+    Identical output (same reps, same first-occurrence order) as the serial byte
+    path, computed with a handful of ``(N,m)@(m,m)`` matmuls instead of ``4m``
+    tiny numpy ops per sequence. Falls back to the serial path when the base-
+    ``(2n+1)`` key would overflow int64 (:func:`_vec_key_fits`).
+    """
+    pairs = list(pairs)
+    if not pairs:
+        return []
+    if not _vec_key_fits(m, n):
+        return orbit_reduced_pairs(pairs, m, use_multipliers=False)
+    CA = np.asarray([p[0] for p in pairs], dtype=np.int64)   # (N,m)
+    CB = np.asarray([p[1] for p in pairs], dtype=np.int64)
+    kA = _canonical_keys_batch(CA, m, n)
+    kB = _canonical_keys_batch(CB, m, n)
+    B = np.int64((2 * n + 1) ** m)
+    lo = np.minimum(kA, kB)
+    hi = np.maximum(kA, kB)
+    combined = lo * B + hi                                   # swap-folded pair key
+    _, first = np.unique(combined, return_index=True)        # first occurrence
+    first.sort()                                             # restore input order
+    return [(CA[i], CB[i]) for i in first]
+
+
 def orbit_sizes(pairs: Iterable[Tuple[np.ndarray, np.ndarray]], m: int,
                 use_multipliers: bool = False) -> Dict[Tuple[bytes, bytes], int]:
     """Map each orbit's canonical key to how many input pairs fell into it."""
