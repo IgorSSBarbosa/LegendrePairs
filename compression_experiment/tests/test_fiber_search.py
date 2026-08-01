@@ -15,6 +15,7 @@ import pytest
 
 from lp_compress.compress import compress, cascade_pairs_vec
 from lp_compress.core import paf_half, is_legendre_pair
+from lp_compress.orbit import orbit_reduce_arrays
 from lp_compress.fiber_search import (
     _column_slots,
     fiber_sample,
@@ -23,6 +24,7 @@ from lp_compress.fiber_search import (
     _apply_swap_half,
     energy_half,
     anneal_fiber_pair,
+    search_survivors,
 )
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -118,3 +120,41 @@ def test_sa_recovers_lp_from_known_fibers(ell, m):
     assert np.array_equal(compress(RA, m), cA.astype(np.int64))
     assert np.array_equal(compress(RB, m), cB.astype(np.int64))
     assert is_legendre_pair(RA, RB)
+
+
+# --------------------------------------------------------------------------- #
+# global early stop: existence mode halts at the first LP
+# --------------------------------------------------------------------------- #
+def test_stop_on_first_halts_after_one_lp():
+    """``stop_on_first`` returns as soon as ANY fiber pair yields an LP.
+
+    Existence mode: exactly one class is emitted, ``stopped_early`` is set, and
+    strictly fewer fibers are annealed than the full sample would touch. The one
+    class emitted must be a genuine LP. Serial (``n_workers=1``) keeps it
+    deterministic so the "searched fewer" assertion is stable.
+    """
+    ell, m = 15, 5
+    CA, CB = cascade_pairs_vec(ell, m)
+    reps = orbit_reduce_arrays(CA, CB, m, ell // m)
+    assert len(reps) > 1                                # a real early-stop is possible
+
+    res = search_survivors(ell, m, reps, max_pairs=len(reps), stop_on_first=True,
+                           n_workers=1, iters=20_000, restarts=60, seed=7)
+    assert res["stopped_early"] is True
+    assert res["n_found"] == 1                          # halts on the first hit
+    assert res["n_classes"] == 1
+    assert res["n_pairs_searched"] < len(reps)          # did NOT scan the whole sample
+    (sA, sB), = res["classes"].values()
+    assert is_legendre_pair(_pm(sA), _pm(sB))
+
+
+def test_stop_on_first_false_scans_the_whole_sample():
+    """Default (coverage) mode anneals every sampled fiber and never sets the flag."""
+    ell, m = 15, 5
+    CA, CB = cascade_pairs_vec(ell, m)
+    reps = orbit_reduce_arrays(CA, CB, m, ell // m)
+
+    res = search_survivors(ell, m, reps, max_pairs=len(reps), stop_on_first=False,
+                           n_workers=1, iters=20_000, restarts=60, seed=7)
+    assert res["stopped_early"] is False
+    assert res["n_pairs_searched"] == len(reps)         # scanned the full sample

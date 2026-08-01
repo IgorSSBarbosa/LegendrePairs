@@ -53,7 +53,8 @@ def _db_class_keys(ell: int) -> Optional[set]:
 
 def run_fiber(ell: int, m: Optional[int] = None, *, max_pairs: int = 60,
               iters: int = 20_000, restarts: int = 60, seed: int = 0,
-              n_workers: Optional[int] = None, verbose: bool = True) -> Dict:
+              n_workers: Optional[int] = None, stop_on_first: bool = False,
+              verbose: bool = True) -> Dict:
     m = _default_modulus(ell, m)
     n = ell // m
 
@@ -65,7 +66,7 @@ def run_fiber(ell: int, m: Optional[int] = None, *, max_pairs: int = 60,
     t1 = time.perf_counter()
     res = search_survivors(ell, m, reps, max_pairs=max_pairs, iters=iters,
                            restarts=restarts, seed=seed, n_workers=n_workers,
-                           verbose=verbose)
+                           stop_on_first=stop_on_first, verbose=verbose)
     t_search = time.perf_counter() - t1
 
     # every discovered pair must be a genuine LP (defensive, exact-integer)
@@ -101,13 +102,20 @@ def run_fiber(ell: int, m: Optional[int] = None, *, max_pairs: int = 60,
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    stop_on_first = False
     cases = []
-    for a in args or ["27:9"]:
+    for a in args:
+        if a in ("--stop", "--stop-on-first"):
+            stop_on_first = True          # existence mode: halt at the first LP
+            continue
         if ":" in a:
             e, mm = a.split(":")
             cases.append((int(e), int(mm)))
         else:
             cases.append((int(a), None))
-    print(f"fiber-restricted SA discovery — {len(cases)} case(s)")
+    if not cases:
+        cases = [(27, 9)]
+    mode = "existence (stop at first LP)" if stop_on_first else "coverage (full sample)"
+    print(f"fiber-restricted SA discovery — {len(cases)} case(s) — {mode}")
     for ell, m in cases:
-        run_fiber(ell, m, verbose=False)
+        run_fiber(ell, m, stop_on_first=stop_on_first, verbose=False)

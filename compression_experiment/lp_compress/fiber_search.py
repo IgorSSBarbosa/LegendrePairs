@@ -204,6 +204,7 @@ def _anneal_one(args) -> Optional[Tuple[Tuple[bytes, bytes], str, str]]:
 def search_survivors(ell: int, m: int, survivor_pairs, *,
                      max_pairs: int = 50, seed: Optional[int] = None,
                      n_workers: Optional[int] = None,
+                     stop_on_first: bool = False,
                      verbose: bool = False, **sa_kw) -> Dict:
     """Anneal a sample of survivor fibers; collect distinct LP CLASSES found.
 
@@ -214,6 +215,14 @@ def search_survivors(ell: int, m: int, survivor_pairs, *,
     :func:`lp_rle.symmetry.canonical_pair` — a lower bound on the class count, NOT
     a census. The class set is seed-deterministic but order-independent, so it does
     not depend on ``n_workers``.
+
+    EARLY STOP (two levels). :func:`anneal_fiber_pair` already stops a single
+    fiber's restarts at the first LP (``E==0``). ``stop_on_first`` adds the GLOBAL
+    stop: as soon as ANY fiber pair yields an LP, stop dispatching the rest and
+    return — the EXISTENCE mode for ``ell`` beyond exhaustive reach, where one LP
+    is the whole goal. In the parallel path this ``terminate()``\\ s the pool, so
+    in-flight anneals are cut short. Leave it ``False`` (default) for the coverage
+    mode that samples many fibers to lower-bound the class count.
 
     SCALING (measured, ell=27, 40 pairs): tasks are UNIFORM (per-pair 0.3-1.5s,
     max << makespan) so there is no load imbalance; speedup is bounded by the HOST.
@@ -237,24 +246,35 @@ def search_survivors(ell: int, m: int, survivor_pairs, *,
 
     classes: Dict[Tuple[bytes, bytes], Tuple[str, str]] = {}
     n_found = 0
+    n_seen = 0                      # fiber pairs actually annealed (< len on early stop)
+    stop = False
     prog = _Progress(len(tasks), label="anneal", enabled=verbose)
 
     def _collect(out) -> None:
-        nonlocal n_found
+        nonlocal n_found, n_seen, stop
+        n_seen += 1
         if out is not None:
             n_found += 1
             key, sA, sB = out
             classes.setdefault(key, (sA, sB))
+            if stop_on_first:
+                stop = True
         prog.update(suffix=f"found={n_found} classes={len(classes)}")
 
     if n_workers <= 1 or len(tasks) <= 1:
         for task in tasks:
             _collect(_anneal_one(task))
+            if stop:
+                break
     else:
         with mp.Pool(min(n_workers, len(tasks))) as pool:
             for out in pool.imap_unordered(_anneal_one, tasks, chunksize=1):
                 _collect(out)
+                if stop:
+                    pool.terminate()   # cut in-flight anneals; existence proven
+                    break
     prog.close()
 
-    return {"n_pairs_searched": len(pairs), "n_found": n_found,
-            "n_classes": len(classes), "classes": classes}
+    return {"n_pairs_searched": n_seen, "n_found": n_found,
+            "n_classes": len(classes), "classes": classes,
+            "stopped_early": stop}

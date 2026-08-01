@@ -26,6 +26,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import sys
+import threading
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -108,6 +109,53 @@ class _Progress:
     def close(self) -> None:
         if self.enabled and self.tty:
             sys.stdout.write("\n")
+            sys.stdout.flush()
+
+
+class _Heartbeat:
+    """Elapsed-time ticker for a BLOCKING call (vectorized sieve / orbit reduce).
+
+    Those stages are one big numpy call with no natural iteration to count, so a
+    daemon thread just prints how long it has been running every ``interval`` s —
+    enough to show the process is alive, not wedged. Use as a context manager::
+
+        with _Heartbeat("sieve", enabled=verbose):
+            CA, CB = cascade_pairs_vec(ell, m)
+    """
+
+    def __init__(self, label: str, enabled: bool = True, interval: float = 3.0):
+        self.label = label
+        self.enabled = enabled
+        self.interval = interval
+        self.tty = sys.stdout.isatty()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.t0 = 0.0
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            el = time.perf_counter() - self.t0
+            if self.tty:
+                sys.stdout.write(f"\r  {self.label} … {el:5.0f}s")
+                sys.stdout.flush()
+            else:
+                print(f"  {self.label} … {el:.0f}s", flush=True)
+
+    def __enter__(self) -> "_Heartbeat":
+        if self.enabled:
+            self.t0 = time.perf_counter()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if self.tty:                                   # clear the ticker line
+            sys.stdout.write("\r" + " " * 40 + "\r")
             sys.stdout.flush()
 
 
@@ -356,7 +404,8 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
 
     # Sieve: vectorized meet-in-the-middle (identical survivor set to cascade_pairs).
     t0 = time.perf_counter()
-    CA_all, CB_all = cascade_pairs_vec(ell, m)
+    with _Heartbeat("sieve", enabled=verbose):
+        CA_all, CB_all = cascade_pairs_vec(ell, m)
     n_pairs = CA_all.shape[0]
     t_sieve = time.perf_counter() - t0
 
@@ -364,12 +413,13 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
     # faster than farming tiny per-pair canonicalizations across processes; keep
     # the process-parallel byte path only for the gated multiplier group.
     t1 = time.perf_counter()
-    if use_multipliers:
-        with mp.Pool(n_workers) as _pool:
-            reps = orbit_reduce_parallel(list(zip(CA_all, CB_all)), m,
-                                         _pool, n_workers * 8, True)
-    else:
-        reps = orbit_reduce_arrays(CA_all, CB_all, m, n)
+    with _Heartbeat("orbit", enabled=verbose):
+        if use_multipliers:
+            with mp.Pool(n_workers) as _pool:
+                reps = orbit_reduce_parallel(list(zip(CA_all, CB_all)), m,
+                                             _pool, n_workers * 8, True)
+        else:
+            reps = orbit_reduce_arrays(CA_all, CB_all, m, n)
     t_orbit = time.perf_counter() - t1
 
     # Pre-flight RAM guard: turn a would-be OOM into a fast, explanatory error.
