@@ -39,6 +39,7 @@ from lp_rle.symmetry import canonical_pair
 
 from .core import paf_half
 from .compress import compress
+from .parallel import _Progress
 
 
 # --------------------------------------------------------------------------- #
@@ -236,24 +237,24 @@ def search_survivors(ell: int, m: int, survivor_pairs, *,
 
     classes: Dict[Tuple[bytes, bytes], Tuple[str, str]] = {}
     n_found = 0
+    prog = _Progress(len(tasks), label="anneal", enabled=verbose)
 
-    def _collect(t: int, out) -> None:
+    def _collect(out) -> None:
         nonlocal n_found
         if out is not None:
             n_found += 1
             key, sA, sB = out
             classes.setdefault(key, (sA, sB))
-        if verbose:
-            print(f"pair {t}/{len(tasks)}: found={out is not None} "
-                  f"classes={len(classes)}", flush=True)
+        prog.update(suffix=f"found={n_found} classes={len(classes)}")
 
     if n_workers <= 1 or len(tasks) <= 1:
-        for t, task in enumerate(tasks, 1):
-            _collect(t, _anneal_one(task))
+        for task in tasks:
+            _collect(_anneal_one(task))
     else:
         with mp.Pool(min(n_workers, len(tasks))) as pool:
-            for t, out in enumerate(pool.imap_unordered(_anneal_one, tasks, chunksize=1), 1):
-                _collect(t, out)
+            for out in pool.imap_unordered(_anneal_one, tasks, chunksize=1):
+                _collect(out)
+    prog.close()
 
     return {"n_pairs_searched": len(pairs), "n_found": n_found,
             "n_classes": len(classes), "classes": classes}

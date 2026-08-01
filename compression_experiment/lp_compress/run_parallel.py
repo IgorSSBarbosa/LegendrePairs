@@ -78,9 +78,10 @@ def _append_timing(row: Dict) -> str:
 
 
 def run_case(ell: int, m: Optional[int] = None,
-             n_workers: Optional[int] = None) -> Dict:
+             n_workers: Optional[int] = None,
+             max_lift_gb: Optional[float] = None) -> Dict:
     """Run one parallel case, save pairs + timing, cross-check vs the DB."""
-    r = pipeline_B_parallel(ell, m=m, n_workers=n_workers)
+    r = pipeline_B_parallel(ell, m=m, n_workers=n_workers, max_lift_gb=max_lift_gb)
 
     # exact SET cross-check against the ground-truth database when available
     db_keys = _db_class_keys(ell)
@@ -120,7 +121,10 @@ def main(cases: Sequence[Tuple[int, Optional[int]]] = DEFAULT_CASES,
          n_workers: Optional[int] = None) -> None:
     print(f"parallel compression funnel (route B) — {len(cases)} case(s)")
     for ell, m in cases:
-        run_case(ell, m, n_workers)
+        try:
+            run_case(ell, m, n_workers)
+        except MemoryError as e:            # pre-flight guard: skip, don't OOM
+            print(f"  SKIP ell={ell} m={m}: {e}", flush=True)
     print(f"\ntiming log: {os.path.join(RESULTS, 'parallel_B_timing.csv')}")
 
 
