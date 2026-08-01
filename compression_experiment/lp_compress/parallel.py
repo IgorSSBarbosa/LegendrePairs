@@ -34,8 +34,8 @@ from lp_rle.symmetry import canonical_pair
 
 from collections import defaultdict
 
-from .compress import cascade_pairs, _default_modulus
-from .orbit import canonical_compressed_pair, orbit_reduced_pairs_vec
+from .compress import cascade_pairs, cascade_pairs_vec, _default_modulus
+from .orbit import canonical_compressed_pair, orbit_reduce_arrays
 from .lift import lift, fiber_size
 from .core import paf_half
 
@@ -132,8 +132,10 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
     n = ell // m
     n_workers = n_workers or os.cpu_count() or 1
 
+    # Sieve: vectorized meet-in-the-middle (identical survivor set to cascade_pairs).
     t0 = time.perf_counter()
-    pairs = list(cascade_pairs(ell, m))
+    CA_all, CB_all = cascade_pairs_vec(ell, m)
+    n_pairs = CA_all.shape[0]
     t_sieve = time.perf_counter() - t0
 
     # Orbit reduction: the vectorized base-(2n+1) int64 path is default and far
@@ -142,9 +144,10 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
     t1 = time.perf_counter()
     if use_multipliers:
         with mp.Pool(n_workers) as _pool:
-            reps = orbit_reduce_parallel(pairs, m, _pool, n_workers * 8, True)
+            reps = orbit_reduce_parallel(list(zip(CA_all, CB_all)), m,
+                                         _pool, n_workers * 8, True)
     else:
-        reps = orbit_reduced_pairs_vec(pairs, m, n)
+        reps = orbit_reduce_arrays(CA_all, CB_all, m, n)
     t_orbit = time.perf_counter() - t1
 
     with mp.Pool(n_workers) as pool:
@@ -167,14 +170,14 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
     total = time.perf_counter() - t0
     result = {
         "ell": ell, "m": m, "n": n, "n_workers": n_workers,
-        "n_compressed_pairs": len(pairs), "n_orbit_reps": len(reps),
+        "n_compressed_pairs": n_pairs, "n_orbit_reps": len(reps),
         "n_lift_candidates": n_lift, "n_lps": n_lps,
         "lp_classes": len(classes), "classes": classes,
         "sieve_s": t_sieve, "orbit_s": t_orbit, "lift_s": t_lift, "total_s": total,
     }
     if verbose:
         print(f"ell={ell} m={m} workers={n_workers}: "
-              f"survivors={len(pairs):,} reps={len(reps):,} "
+              f"survivors={n_pairs:,} reps={len(reps):,} "
               f"lift={n_lift:,} classes={len(classes)}  "
               f"[sieve {t_sieve:.1f}s | orbit {t_orbit:.1f}s | "
               f"lift {t_lift:.1f}s | total {total:.1f}s]", flush=True)

@@ -166,6 +166,91 @@ def cascade_pairs(ell: int, m: Optional[int] = None, use_stub: bool = False
                 yield cA, cB
 
 
+# --------------------------------------------------------------------------- #
+# VECTORIZED sieve — identical survivor SET to cascade_pairs, no Python per-vector
+# --------------------------------------------------------------------------- #
+# Same meet-in-the-middle as ``cascade_pairs``: a pair survives iff
+# ``key(cB) == target(key(cA))`` with ``key = (energy, P(1..m-1))`` and
+# ``target = (E_tgt - energy, -2n - P(1), ..., -2n - P(m-1))``.  Everything is a
+# numpy array op; the only Python loop is over DISTINCT keys (``<< N``), emitting
+# each matched group pair's Cartesian product.  Key components are bounded by
+# ``|P(s)| <= energy <= m*n**2``, so int16 holds them exactly.
+
+
+def _enumerate_compressed_array(ell: int, m: int) -> np.ndarray:
+    """All ``(n+1)**m`` compressed vectors as an ``(N, m)`` int8 array (base-(n+1))."""
+    n = ell // m
+    b = n + 1
+    N = b ** m
+    alpha = np.arange(-n, n + 1, 2, dtype=np.int8)  # {-n,-n+2,...,n}, length n+1
+    C = np.empty((N, m), dtype=np.int8)
+    idx = np.arange(N, dtype=np.int64)
+    for j in range(m):
+        C[:, j] = alpha[(idx // (b ** (m - 1 - j))) % b]
+    return C
+
+
+def _paf_keys_array(C: np.ndarray, m: int) -> np.ndarray:
+    """``(N, m)`` int16 keys ``(energy, P(1), ..., P(m-1))`` for rows of ``C``."""
+    C16 = C.astype(np.int16)
+    K = np.empty(C16.shape, dtype=np.int16)
+    K[:, 0] = (C16 * C16).sum(axis=1)                       # energy = P(0)
+    for s in range(1, m):
+        K[:, s] = (C16 * np.roll(C16, -s, axis=1)).sum(axis=1)
+    return K
+
+
+def cascade_pairs_vec(ell: int, m: Optional[int] = None
+                      ) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized :func:`cascade_pairs`; returns ``(CA, CB)`` int8 arrays ``(P, m)``.
+
+    The survivor SET (as ordered pairs) is identical to ``cascade_pairs``; row
+    order differs (grouped by key). Use ``zip(CA, CB)`` to feed the pipeline.
+    """
+    check_odd(ell)
+    m = _default_modulus(ell, m)
+    n = ell // m
+    C = _enumerate_compressed_array(ell, m)
+    K = _paf_keys_array(C, m)
+    N = C.shape[0]
+
+    # group rows by identical key via a void-byte view
+    kv = np.ascontiguousarray(K).view(np.dtype((np.void, K.dtype.itemsize * m))).reshape(N)
+    uniq, inv = np.unique(kv, return_inverse=True)
+    inv = inv.reshape(-1)
+    n_groups = uniq.shape[0]
+
+    # members of each group, contiguous after stable sort on group id
+    order = np.argsort(inv, kind="stable")
+    counts = np.bincount(inv, minlength=n_groups)
+    starts = np.zeros(n_groups + 1, dtype=np.int64)
+    np.cumsum(counts, out=starts[1:])
+
+    # target key of each DISTINCT key, and its group id (or -1)
+    uniqK = uniq.view(K.dtype).reshape(n_groups, m)
+    energy_target = 2 * ell - 2 * n + 2
+    Tu = np.empty_like(uniqK)
+    Tu[:, 0] = energy_target - uniqK[:, 0]
+    Tu[:, 1:] = -2 * n - uniqK[:, 1:]
+    tv = np.ascontiguousarray(Tu).view(np.dtype((np.void, K.dtype.itemsize * m))).reshape(n_groups)
+    kmap = {uniq[g].tobytes(): g for g in range(n_groups)}
+
+    ca_blocks: List[np.ndarray] = []
+    cb_blocks: List[np.ndarray] = []
+    for g in range(n_groups):
+        h = kmap.get(tv[g].tobytes())
+        if h is None:
+            continue
+        rows_g = order[starts[g]:starts[g + 1]]
+        rows_h = order[starts[h]:starts[h + 1]]
+        # Cartesian product (rows_g x rows_h), order-matching the serial nested loop
+        ca_blocks.append(np.repeat(C[rows_g], rows_h.shape[0], axis=0))
+        cb_blocks.append(np.tile(C[rows_h], (rows_g.shape[0], 1)))
+    if not ca_blocks:
+        return (np.empty((0, m), np.int8), np.empty((0, m), np.int8))
+    return np.concatenate(ca_blocks, axis=0), np.concatenate(cb_blocks, axis=0)
+
+
 def _default_modulus(ell: int, m: Optional[int]) -> int:
     if m is not None:
         return m

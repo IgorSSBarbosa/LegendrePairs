@@ -165,22 +165,19 @@ def _canonical_keys_batch(C: np.ndarray, m: int, n: int) -> np.ndarray:
     return best
 
 
-def orbit_reduced_pairs_vec(pairs, m: int, n: int
-                            ) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Vectorized equivalent of :func:`orbit_reduced_pairs` (multipliers OFF).
+def orbit_reduce_arrays(CA: np.ndarray, CB: np.ndarray, m: int, n: int
+                        ) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Vectorized orbit reduction on stacked ``(N,m)`` arrays (multipliers OFF).
 
-    Identical output (same reps, same first-occurrence order) as the serial byte
-    path, computed with a handful of ``(N,m)@(m,m)`` matmuls instead of ``4m``
-    tiny numpy ops per sequence. Falls back to the serial path when the base-
-    ``(2n+1)`` key would overflow int64 (:func:`_vec_key_fits`).
+    Same reps, same first-occurrence order as the serial byte path. Falls back to
+    the serial oracle when the base-``(2n+1)`` key would overflow int64.
     """
-    pairs = list(pairs)
-    if not pairs:
+    CA = np.asarray(CA, dtype=np.int64)
+    CB = np.asarray(CB, dtype=np.int64)
+    if CA.shape[0] == 0:
         return []
     if not _vec_key_fits(m, n):
-        return orbit_reduced_pairs(pairs, m, use_multipliers=False)
-    CA = np.asarray([p[0] for p in pairs], dtype=np.int64)   # (N,m)
-    CB = np.asarray([p[1] for p in pairs], dtype=np.int64)
+        return orbit_reduced_pairs(list(zip(CA, CB)), m, use_multipliers=False)
     kA = _canonical_keys_batch(CA, m, n)
     kB = _canonical_keys_batch(CB, m, n)
     B = np.int64((2 * n + 1) ** m)
@@ -190,6 +187,17 @@ def orbit_reduced_pairs_vec(pairs, m: int, n: int
     _, first = np.unique(combined, return_index=True)        # first occurrence
     first.sort()                                             # restore input order
     return [(CA[i], CB[i]) for i in first]
+
+
+def orbit_reduced_pairs_vec(pairs, m: int, n: int
+                            ) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """List-of-pairs wrapper around :func:`orbit_reduce_arrays`."""
+    pairs = list(pairs)
+    if not pairs:
+        return []
+    CA = np.asarray([p[0] for p in pairs], dtype=np.int64)   # (N,m)
+    CB = np.asarray([p[1] for p in pairs], dtype=np.int64)
+    return orbit_reduce_arrays(CA, CB, m, n)
 
 
 def orbit_sizes(pairs: Iterable[Tuple[np.ndarray, np.ndarray]], m: int,
