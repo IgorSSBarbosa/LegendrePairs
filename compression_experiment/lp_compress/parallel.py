@@ -34,7 +34,7 @@ from lp_rle.symmetry import canonical_pair
 
 from collections import defaultdict
 
-from .compress import cascade_pairs, cascade_pairs_vec, _default_modulus
+from .compress import cascade_pairs, cascade_pairs_vec, _default_modulus, compress, compressed_psd
 from .orbit import canonical_compressed_pair, orbit_reduce_arrays
 from .lift import lift, fiber_size
 from .core import paf_half
@@ -85,6 +85,40 @@ def orbit_reduce_parallel(pairs: List[Tuple[np.ndarray, np.ndarray]], m: int,
 
 
 # --------------------------------------------------------------------------- #
+# Q1: secondary-modulus necessary-condition filter (prune fibers before PAF)
+# --------------------------------------------------------------------------- #
+def _passes_secondary(A: np.ndarray, ell: int, sec_mods: Tuple[int, ...],
+                      tol: float = 1e-6) -> bool:
+    """Necessary spectral condition from OTHER moduli (VERIFIED, sound as a filter).
+
+    If ``(A, B)`` is an LP then ``PSD_A(k) + PSD_B(k) = 2*ell+2`` with
+    ``PSD_B(k) >= 0``, so ``PSD_A(k) <= 2*ell+2`` at EVERY frequency ``k != 0``, and
+    ``PSD_A(0) = (sum A)^2 = 1``. A compression mod ``m2`` exposes ``PSD_A`` at the
+    frequencies ``m2`` sees (multiples of ``ell/m2``) via
+    ``PSD^{m2}_{compress(A,m2)} = PSD_A(n2 * s)``. Checking those bounds rejects
+    fiber elements that cannot lie in any LP and NEVER drops a true LP (the final
+    decision stays the exact PAF join).
+
+    HONEST CAVEAT (measured ell=33, m=11, m2=3): the filter is LOSSLESS (287 LP
+    classes unchanged) and prunes ~25% of fiber candidates, but it is a NET
+    SLOWDOWN on top of the PAF hash-join (lift 88s -> 254s). The hash-join is
+    already ``O(|LA|+|LB|)`` — it computes one ``paf_half`` per element, not per
+    product — so the per-element ``compress + compressed_psd`` costs more than the
+    handful of PAF vectors it removes. This answers Q1 empirically: extra-divisor
+    pruning "makes sense" combinatorially but does NOT beat the hash-join, which
+    already delivers the asymptotic win. Kept OFF by default; worthwhile only with
+    the brute ``O(|LA|*|LB|)`` join, where pruning each side compounds.
+    """
+    for m2 in sec_mods:
+        p = compressed_psd(compress(A, m2))
+        if abs(p[0] - 1.0) > tol:               # row-sum: PSD(0)=(sum A)^2 must be 1
+            return False
+        if np.any(p[1:] > 2 * ell + 2 + tol):   # PSD_A(k) <= 2*ell+2 at m2 frequencies
+            return False
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # stage 2 worker: lift one representative's fiber and PAF-test it
 # --------------------------------------------------------------------------- #
 def _lift_rep(args) -> Tuple[Dict[Tuple[bytes, bytes], Tuple[str, str]], int, int]:
@@ -94,10 +128,15 @@ def _lift_rep(args) -> Tuple[Dict[Tuple[bytes, bytes], Tuple[str, str]], int, in
     componentwise. So we bucket the A-fiber by its PAF key and, for each B, look
     up the required complementary key ``-2 - paf_half(B)``. This computes only
     ``|LA| + |LB|`` PAF vectors per rep instead of testing every product pair.
+
+    When ``sec_mods`` is non-empty each fiber is first pruned by the secondary-
+    modulus necessary condition (:func:`_passes_secondary`) — lossless (cannot
+    change the class set) but, with this hash-join, a net slowdown at tested ell
+    (see that function's docstring). Off by default.
     """
-    cA, cB, ell, m = args
-    LA = list(lift(cA, ell, m))
-    LB = list(lift(cB, ell, m))
+    cA, cB, ell, m, sec_mods = args
+    LA = [A for A in lift(cA, ell, m) if _passes_secondary(A, ell, sec_mods)]
+    LB = [B for B in lift(cB, ell, m) if _passes_secondary(B, ell, sec_mods)]
     by_paf: "defaultdict[bytes, list]" = defaultdict(list)
     for A in LA:
         by_paf[paf_half(A).tobytes()].append(A)
@@ -122,6 +161,7 @@ def _lift_rep(args) -> Tuple[Dict[Tuple[bytes, bytes], Tuple[str, str]], int, in
 def pipeline_B_parallel(ell: int, m: Optional[int] = None,
                         n_workers: Optional[int] = None,
                         use_multipliers: bool = False,
+                        secondary_moduli: Optional[Sequence[int]] = None,
                         verbose: bool = True) -> Dict:
     """Multiprocess compression funnel; returns counts, per-stage timings, classes.
 
@@ -131,6 +171,7 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
     m = _default_modulus(ell, m)
     n = ell // m
     n_workers = n_workers or os.cpu_count() or 1
+    sec_mods = tuple(mm for mm in (secondary_moduli or ()) if ell % mm == 0 and mm != m)
 
     # Sieve: vectorized meet-in-the-middle (identical survivor set to cascade_pairs).
     t0 = time.perf_counter()
@@ -155,7 +196,7 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
         reps_sorted = sorted(
             reps, key=lambda p: fiber_size(p[0], ell, m) * fiber_size(p[1], ell, m),
             reverse=True)
-        tasks = [(cA, cB, ell, m) for cA, cB in reps_sorted]
+        tasks = [(cA, cB, ell, m, sec_mods) for cA, cB in reps_sorted]
 
         t2 = time.perf_counter()
         classes: Dict[Tuple[bytes, bytes], Tuple[str, str]] = {}
@@ -173,6 +214,7 @@ def pipeline_B_parallel(ell: int, m: Optional[int] = None,
         "n_compressed_pairs": n_pairs, "n_orbit_reps": len(reps),
         "n_lift_candidates": n_lift, "n_lps": n_lps,
         "lp_classes": len(classes), "classes": classes,
+        "secondary_moduli": sec_mods,
         "sieve_s": t_sieve, "orbit_s": t_orbit, "lift_s": t_lift, "total_s": total,
     }
     if verbose:
