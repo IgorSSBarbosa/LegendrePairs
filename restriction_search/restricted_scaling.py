@@ -110,12 +110,16 @@ def make_plot(rows: list[dict]) -> None:
             ax.axvline(px, color=color, linestyle=":", alpha=0.3)
 
     ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(f"time to first pair (s, log scale); dotted = not found within {TIME_BUDGET:g}s")
+    ax.set_ylabel("time to first pair (s, log scale)")
     ax.set_title("Restricted (p75_leading) exhaustive search, ell=3..37\n"
                  "single deterministic run, no unrestricted comparison (see docstring)")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend()
-    fig.tight_layout()
+    fig.text(0.5, 0.01,
+              f"dotted vlines = not found within budget ({TIME_BUDGET:g}s; "
+              "ell=37 rle retried at 600s via retry_ell37.py, still not found)",
+              ha="center", fontsize=8, color="0.3")
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
     fig.savefig(PLOT_PATH, dpi=150)
     plt.close(fig)
 
