@@ -344,6 +344,8 @@ class JointWalker:
             paf_cur = self.pu if side == "u" else self.pv
             mv = self.moves.propose(v_cur, self.rng)
             if mv is None:
+                if time_budget is not None and (time.perf_counter() - t0) > time_budget:
+                    break
                 continue
             dpaf = delta_paf_general(v_cur, mv.J, mv.delta, self.L)
             df = int(delta_f(self.e, dpaf))
@@ -460,6 +462,8 @@ class TwoStageSearch:
             st.steps += 1
             mv = self.moves.propose(v, self.rng)
             if mv is None:
+                if time_budget is not None and (time.perf_counter() - t0) > time_budget:
+                    break
                 continue
             dpaf = delta_paf_general(v, mv.J, mv.delta, self.L)
             pv_new = pv + dpaf
