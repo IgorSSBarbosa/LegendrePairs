@@ -7,12 +7,17 @@ DO NOT RUN AUTOMATICALLY -- written for review; run by hand once approved
 Modeled on experiments/benchmark_methods.py's figure (time-to-solve + success
 rate vs ell, one line per method), but two things differ:
 
-1. Every method operates INSIDE the restricted space, using the same
-   (i*, j*) = argmax cell from canonical_orbits/restriction_exact/ell{ell}.csv
-   that restriction_search/benchmark.py already validated as a real win for
-   exhaustive search. This is the natural next step after that benchmark: now
-   that we know restriction helps, compare methods *within* the restricted
-   regime rather than the raw one.
+1. Every method operates INSIDE the restricted space, using
+   restriction_rule.p75_leading_ij(ell) -- i(ell) fit to the 75th percentile
+   of real canonical LPs' leading-run length, j=1 fixed. This replaced the
+   original (i*, j*) = argmax cell of restriction_exact: compare_rules.py
+   showed that rule freezes at a fixed (2,1) for every ell past 27 (flat
+   ~57-60x space reduction, no asymptotic win), while p75_leading tracks its
+   live search speed almost exactly and keeps growing to ~4300x reduction by
+   ell=57 -- see restriction_search/results/compare_rules.png. This sweep is
+   the natural next step after benchmark.py validated that restriction helps
+   at all: compare methods *within* the restricted regime rather than the raw
+   one.
 
 2. The time budget per (method, ell) cell is not a fixed constant. It's set
    adaptively per ell: run the REFERENCE method first (RLE exhaustive, the
@@ -54,7 +59,9 @@ composition-based candidate materialization (the slow part, ~24s at ell=27)
 still happens once per ell for the baseline/binary_exhaustive/tabu_rle/
 sa_rle/basinhop_rle series that need it -- see NOTE in bench_one_ell below.
 
-Output: results/sweep_methods.csv, results/sweep_methods.png
+Output: results/sweep_methods_p75_24seeds.csv, results/sweep_methods_p75_24seeds.png
+(original argmax-rule outputs, sweep_methods.csv/.png and
+sweep_methods_24seeds.csv/.png, left untouched on disk)
 """
 from __future__ import annotations
 
@@ -73,17 +80,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from benchmark import load_best_ij  # noqa: E402
 from restricted_binary import find_first_binary_exhaustive_multi_seed  # noqa: E402
 from restricted_rle import find_first_rle_exhaustive_multi_seed  # noqa: E402
 from restricted_local_search import run_trial  # noqa: E402
+from restriction_rule import p75_leading_ij  # noqa: E402
 
 RESULTS_DIR = os.path.join(_HERE, "results")
-# Distinct filenames from the first (N_SEEDS=8) pass -- that run stays as-is on
-# disk/in git; this is a separate, higher-repetition re-run of the same ell
-# range, not an overwrite.
-CSV_PATH = os.path.join(RESULTS_DIR, "sweep_methods_24seeds.csv")
-PLOT_PATH = os.path.join(RESULTS_DIR, "sweep_methods_24seeds.png")
+# Distinct filenames from the argmax-rule passes (both the first N_SEEDS=8 run
+# and the 24-seed noise-reduced re-run) -- those stay as-is on disk/in git;
+# this is the same ell range and seed count, but under the new p75_leading
+# restriction rule, not an overwrite.
+CSV_PATH = os.path.join(RESULTS_DIR, "sweep_methods_p75_24seeds.csv")
+PLOT_PATH = os.path.join(RESULTS_DIR, "sweep_methods_p75_24seeds.png")
 
 LADDER = list(range(3, 24, 2))          # ell = 3, 5, ..., 23 (first pass; 25,27 held back
                                          # for a later, longer run -- see runtime table
@@ -139,7 +147,7 @@ def bench_one_ell(ell: int) -> tuple[list[dict], float, float]:
     implicitly nowhere else, since binary_exhaustive uses the binary
     enumeration instead. Good -- no redundant materialization.
     """
-    i_star, j_star = load_best_ij(ell)
+    i_star, j_star = p75_leading_ij(ell)
     i_rle, j_rle = max(i_star, 1), max(j_star, 1)
 
     baseline_recs = find_first_rle_exhaustive_multi_seed(
@@ -229,8 +237,8 @@ def make_plot(rows: list[dict]) -> None:
     ax_r.grid(True, alpha=0.3)
     ax_r.legend(fontsize=8)
 
-    fig.suptitle("Restricted-space method comparison, ell=3..27 "
-                 "(restriction = argmax cell of restriction_exact)", fontsize=12)
+    fig.suptitle("Restricted-space method comparison, ell=3..23 "
+                 "(restriction = p75_leading envelope)", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(PLOT_PATH, dpi=130)
 
