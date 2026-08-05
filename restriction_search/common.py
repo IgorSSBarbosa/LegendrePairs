@@ -23,7 +23,7 @@ from legendre import _paf_key  # noqa: E402
 
 
 def find_first_pair_random_order(candidates: Iterable[tuple[int, ...]], ell: int,
-                                  seed: int) -> dict:
+                                  seed: int, time_budget: float | None = None) -> dict:
     """Like find_first_pair, but scans the candidate set in a seeded random
     order first. A *deterministic* enumeration order (plain combinations(),
     or run-length compositions()) makes "time to first hit" pure artifact of
@@ -40,28 +40,37 @@ def find_first_pair_random_order(candidates: Iterable[tuple[int, ...]], ell: int
     dominate the whole benchmark's runtime.
     """
     pool = list(candidates)
-    return find_first_pair_multi_seed(pool, ell, [seed])[0]
+    return find_first_pair_multi_seed(pool, ell, [seed], time_budget=time_budget)[0]
 
 
 def find_first_pair_multi_seed(pool: list[tuple[int, ...]], ell: int,
-                                seeds: list[int]) -> list[dict]:
+                                seeds: list[int], time_budget: float | None = None) -> list[dict]:
     """Run find_first_pair under `len(seeds)` independent shuffles of the
     SAME already-materialized `pool` (mutates a shuffled copy per seed, never
-    the caller's list)."""
+    the caller's list). `time_budget`, if given, is forwarded to each scan as
+    a prune cutoff (see find_first_pair)."""
     out = []
     for seed in seeds:
         shuffled = pool.copy()
         random.Random(seed).shuffle(shuffled)
-        result = find_first_pair(shuffled, ell)
+        result = find_first_pair(shuffled, ell, time_budget=time_budget)
         result["candidate_space"] = len(shuffled)
         out.append(result)
     return out
 
 
-def find_first_pair(candidates: Iterable[tuple[int, ...]], ell: int) -> dict:
+def find_first_pair(candidates: Iterable[tuple[int, ...]], ell: int,
+                     time_budget: float | None = None) -> dict:
     """Scan `candidates` once, stopping the instant a Legendre pair is seen.
 
-    Returns dict(found, a, b, seconds, scanned).
+    If `time_budget` is given, the elapsed wall time is checked every 1024
+    candidates (cheap relative to the PAF computation itself) and the scan is
+    abandoned -- "pruned" -- once it's exceeded, reporting found=False rather
+    than running to completion or exhaustion. This is what lets a sweep over
+    many (method, ell) cells bound its worst case: a method that's clearly
+    not going to beat the reference gets cut off instead of run to the end.
+
+    Returns dict(found, a, b, seconds, scanned, pruned).
     """
     half = (ell - 1) // 2
     buckets: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
@@ -74,10 +83,15 @@ def find_first_pair(candidates: Iterable[tuple[int, ...]], ell: int) -> dict:
         partners = buckets.get(comp)
         if partners:
             return {"found": True, "a": seq, "b": partners[0],
-                     "seconds": time.perf_counter() - t0, "scanned": n}
+                     "seconds": time.perf_counter() - t0, "scanned": n, "pruned": False}
         if key == comp:
             return {"found": True, "a": seq, "b": seq,
-                     "seconds": time.perf_counter() - t0, "scanned": n}
+                     "seconds": time.perf_counter() - t0, "scanned": n, "pruned": False}
         buckets.setdefault(key, []).append(seq)
+        if time_budget is not None and (n & 0x3FF) == 0:
+            elapsed = time.perf_counter() - t0
+            if elapsed > time_budget:
+                return {"found": False, "a": None, "b": None,
+                         "seconds": elapsed, "scanned": n, "pruned": True}
     return {"found": False, "a": None, "b": None,
-             "seconds": time.perf_counter() - t0, "scanned": n}
+             "seconds": time.perf_counter() - t0, "scanned": n, "pruned": False}

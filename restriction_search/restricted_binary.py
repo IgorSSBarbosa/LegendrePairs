@@ -54,12 +54,14 @@ def find_first_binary_exhaustive(ell: int, i: int, j: int, seed: int | None = No
     return find_first_pair_random_order(iter_restricted_candidates(ell, i, j), ell, seed)
 
 
-def find_first_binary_exhaustive_multi_seed(ell: int, i: int, j: int, seeds: list[int]) -> list[dict]:
+def find_first_binary_exhaustive_multi_seed(ell: int, i: int, j: int, seeds: list[int],
+                                             time_budget: float | None = None) -> list[dict]:
     """Materializes the restricted candidate list once, then runs one
     seeded-shuffle scan per seed (much cheaper than calling
-    find_first_binary_exhaustive per seed)."""
+    find_first_binary_exhaustive per seed). time_budget: see
+    common.find_first_pair -- prunes a scan that's taking too long."""
     pool = list(iter_restricted_candidates(ell, i, j))
-    return find_first_pair_multi_seed(pool, ell, seeds)
+    return find_first_pair_multi_seed(pool, ell, seeds, time_budget=time_budget)
 
 
 if __name__ == "__main__":

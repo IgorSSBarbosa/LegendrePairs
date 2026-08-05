@@ -73,12 +73,15 @@ def find_first_rle_exhaustive(ell: int, i: int, j: int, seed: int | None = None)
     return find_first_pair_random_order(iter_restricted_run_seqs(ell, i, j), ell, seed)
 
 
-def find_first_rle_exhaustive_multi_seed(ell: int, i: int, j: int, seeds: list[int]) -> list[dict]:
+def find_first_rle_exhaustive_multi_seed(ell: int, i: int, j: int, seeds: list[int],
+                                          time_budget: float | None = None) -> list[dict]:
     """Materializes the restricted run-array candidate list once (the
     expensive part -- compositions() is a pure-Python recursive generator),
-    then runs one seeded-shuffle scan per seed."""
+    then runs one seeded-shuffle scan per seed. time_budget: see
+    common.find_first_pair -- prunes a scan that's taking too long (note this
+    does NOT bound the materialization step itself, only the scan)."""
     pool = list(iter_restricted_run_seqs(ell, i, j))
-    return find_first_pair_multi_seed(pool, ell, seeds)
+    return find_first_pair_multi_seed(pool, ell, seeds, time_budget=time_budget)
 
 
 if __name__ == "__main__":
