@@ -79,14 +79,18 @@ from restricted_rle import find_first_rle_exhaustive_multi_seed  # noqa: E402
 from restricted_local_search import run_trial  # noqa: E402
 
 RESULTS_DIR = os.path.join(_HERE, "results")
-CSV_PATH = os.path.join(RESULTS_DIR, "sweep_methods.csv")
-PLOT_PATH = os.path.join(RESULTS_DIR, "sweep_methods.png")
+# Distinct filenames from the first (N_SEEDS=8) pass -- that run stays as-is on
+# disk/in git; this is a separate, higher-repetition re-run of the same ell
+# range, not an overwrite.
+CSV_PATH = os.path.join(RESULTS_DIR, "sweep_methods_24seeds.csv")
+PLOT_PATH = os.path.join(RESULTS_DIR, "sweep_methods_24seeds.png")
 
 LADDER = list(range(3, 24, 2))          # ell = 3, 5, ..., 23 (first pass; 25,27 held back
                                          # for a later, longer run -- see runtime table
                                          # discussed before this run)
-BASELINE_SEEDS = [0, 1, 2]              # seeds used to establish the per-ell ceiling
-N_SEEDS = 8                             # seeds for every other method
+BASELINE_SEEDS = list(range(9))         # seeds used to establish the per-ell ceiling
+N_SEEDS = 24                            # seeds for every other method (was 8; bumped for
+                                         # a lower-variance re-run of ell=3..23)
 PRUNE_FACTOR = 3.0                      # ceiling = PRUNE_FACTOR * baseline_time
 MIN_CEILING = 0.5                       # seconds; floor so a tiny baseline doesn't
                                          # produce an unreasonably tight ceiling.
