@@ -1,9 +1,7 @@
 """benchmark.py — does the restriction strategy actually pay off?
 
-For each ell in a small ladder (chosen where canonical_orbits/restriction_exact
-already has exact ground truth), picks the (i*, j*) restriction that
-restriction_exact/ell{ell}.csv identifies as the best-yield cell for that ell,
-and compares time-to-first-Legendre-pair, restricted vs unrestricted, across:
+For each ell in a small ladder, picks a restriction (i*, j*) and compares
+time-to-first-Legendre-pair, restricted vs unrestricted, across:
 
   - binary exhaustive brute-force  (restricted_binary.py)
   - RLE exhaustive brute-force     (restricted_rle.py; i,j>=1 only, so no
@@ -11,12 +9,23 @@ and compares time-to-first-Legendre-pair, restricted vs unrestricted, across:
   - tabu / simulated annealing / basin-hopping, each over both the binary and
     RLE move sets (restricted_local_search.py)
 
+Restriction rule: p75_leading (restriction_rule.py) -- i(ell) fit to the 75th
+percentile of real canonical LPs' leading-run length, j=1 fixed. This
+replaces the original argmax-yield-cell rule (still available as
+load_best_ij below, unused by run_all now): compare_rules.py showed that rule
+freezes at a fixed (2,1) for every ell past 27 (flat ~57-60x space reduction,
+no asymptotic win, and it even erodes across ell=13..27 before that), while
+p75_leading tracks its live search speed almost exactly and keeps growing to
+~4300x reduction by ell=57. See restriction_search/results/compare_rules.png.
+
 Exhaustive trials use a seeded-random scan order (fair, like the seeded
 metaheuristic trials) EXCEPT the unrestricted binary case, which is too large
 to materialize+shuffle repeatedly (~2*10^7 candidates at ell=27) -- that one
 reports a single deterministic-order run, clearly flagged via seeds=1.
 
-Output: results/benchmark.csv, results/benchmark_ttf.png
+Output: results/benchmark_p75.csv, results/benchmark_p75_ttf.png
+(original argmax-rule outputs, results/benchmark.csv + benchmark_ttf.png,
+left untouched on disk -- see restriction_rule.py for why the rule changed)
 """
 from __future__ import annotations
 
@@ -38,11 +47,12 @@ import matplotlib.pyplot as plt
 from restricted_binary import find_first_binary_exhaustive, find_first_binary_exhaustive_multi_seed  # noqa: E402
 from restricted_rle import find_first_rle_exhaustive_multi_seed  # noqa: E402
 from restricted_local_search import run_trial  # noqa: E402
+from restriction_rule import p75_leading_ij  # noqa: E402
 
 RESULTS_DIR = os.path.join(_HERE, "results")
 EXACT_DIR = os.path.join(_HERE, "..", "canonical_orbits", "results", "restriction_exact")
-CSV_PATH = os.path.join(RESULTS_DIR, "benchmark.csv")
-PLOT_PATH = os.path.join(RESULTS_DIR, "benchmark_ttf.png")
+CSV_PATH = os.path.join(RESULTS_DIR, "benchmark_p75.csv")
+PLOT_PATH = os.path.join(RESULTS_DIR, "benchmark_p75_ttf.png")
 
 LADDER = [15, 19, 23, 27]
 N_SEEDS_EXH = 12
@@ -53,7 +63,10 @@ UNRESTRICTED_BINARY_MAX_ELL = 21  # beyond this, shuffled unrestricted exhaustiv
 
 
 def load_best_ij(ell: int) -> tuple[int, int]:
-    """(i*, j*) = argmax fraction cell in restriction_exact/ell{ell}.csv."""
+    """(i*, j*) = argmax fraction cell in restriction_exact/ell{ell}.csv.
+
+    Superseded by restriction_rule.p75_leading_ij (see module docstring);
+    kept here only for reference / re-running the original comparison."""
     path = os.path.join(EXACT_DIR, f"ell{ell}.csv")
     best = (0, 0, -1.0)
     with open(path, newline="") as f:
@@ -119,8 +132,8 @@ def run_all() -> list[dict]:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     all_rows = []
     for ell in LADDER:
-        i_star, j_star = load_best_ij(ell)
-        print(f"=== ell={ell}: best restriction (i*,j*)=({i_star},{j_star}) ===", flush=True)
+        i_star, j_star = p75_leading_ij(ell)
+        print(f"=== ell={ell}: p75_leading restriction (i*,j*)=({i_star},{j_star}) ===", flush=True)
         for i, j, label in [(0, 0, "unrestricted"), (i_star, j_star, "restricted")]:
             t0 = time.time()
             rows = bench_exhaustive(ell, i, j, label) + bench_meta(ell, i, j, label)
@@ -165,7 +178,7 @@ def plot_ttf(rows: list[dict]) -> None:
 
         pos = np.arange(len(xs))
         ax.bar(pos - 0.2, un_vals, width=0.4, label="unrestricted")
-        ax.bar(pos + 0.2, re_vals, width=0.4, label="restricted (i*,j*)")
+        ax.bar(pos + 0.2, re_vals, width=0.4, label="restricted (p75_leading)")
         ax.set_yscale("log")
         ax.set_xticks(pos)
         ax.set_xticklabels(xs, fontsize=7, rotation=45, ha="right")
